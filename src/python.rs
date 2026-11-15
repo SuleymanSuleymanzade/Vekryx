@@ -1,20 +1,20 @@
-use crate::{chunking, distance, store::Store};
+use crate::{chunking, distance, store::Vekryx};
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
 /// An in-memory vector store with configurable exact search and JSON snapshots.
-#[pyclass(module = "vector_database")]
-struct VectorStore {
-    store: Store,
+#[pyclass(name = "Vekryx", module = "vekryx")]
+struct PyVekryx {
+    store: Vekryx,
 }
 
 #[pymethods]
-impl VectorStore {
+impl PyVekryx {
     #[new]
     fn new(dimensions: usize) -> PyResult<Self> {
         Ok(Self {
-            store: Store::new(dimensions).map_err(PyValueError::new_err)?,
+            store: Vekryx::new(dimensions).map_err(PyValueError::new_err)?,
         })
     }
 
@@ -75,7 +75,7 @@ impl VectorStore {
 
     #[staticmethod]
     fn load(path: PathBuf) -> PyResult<Self> {
-        match Store::load(path) {
+        match Vekryx::load(path) {
             Ok(store) => Ok(Self { store }),
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 Err(PyValueError::new_err(error.to_string()))
@@ -86,8 +86,8 @@ impl VectorStore {
 }
 
 #[pymodule]
-fn vector_database(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<VectorStore>()?;
+fn vekryx(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyVekryx>()?;
     chunking::register(m)?;
     Ok(())
 }

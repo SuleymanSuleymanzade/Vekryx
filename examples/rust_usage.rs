@@ -1,20 +1,20 @@
 //! Run: cargo run --example rust_usage -- [snapshot-path]
 use std::path::PathBuf;
-use vector_database::{
+use vekryx::{
     chunking::{ChunkingStrategy, HierarchicalChunker},
     distance::Cosine,
-    store::Store,
+    Vekryx,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("data/vectors.json"));
+        .unwrap_or_else(|| PathBuf::from("data/vekryx.json"));
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
-    let mut store = Store::new(3)?;
+    let mut store = Vekryx::new(3)?;
     store.insert("item1".into(), vec![1.0, 2.0, 3.0])?;
     store.insert("item2".into(), vec![3.0, 2.0, 1.0])?;
     let query = [1.0, 2.0, 3.0];
@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         chunks.iter().filter(|c| c.is_leaf).count()
     );
     store.save(&path)?;
-    let restored = Store::load(&path)?;
+    let restored = Vekryx::load(&path)?;
     assert_eq!(restored.get("item1").unwrap(), &vec![1.0, 2.0, 3.0]);
     println!(
         "Saved {} vectors to {}",

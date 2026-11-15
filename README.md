@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="assets/vector_db.png" width="150" alt="Vector Database pixelated V logo">
+  <img src="assets/vector_db.png" width="150" alt="Vekryx pixelated V logo">
 </p>
 
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/wordmark.svg">
-    <img src="assets/wordmark.svg" width="460" alt="VECTOR_DATABASE">
+    <img src="assets/wordmark.svg" width="260" alt="VEKRYX">
   </picture>
 </h1>
 
@@ -28,7 +28,7 @@
 
 ## Overview
 
-Vector Database is an early-stage, in-memory vector search library with native
+Vekryx is an early-stage, in-memory vector search library with native
 Rust and optional Python APIs. Store numeric vectors by string ID, retrieve
 nearest neighbors, diversify results with maximal marginal relevance (MMR), and
 split text into flat or hierarchical chunks before embedding.
@@ -36,6 +36,10 @@ split text into flat or hierarchical chunks before embedding.
 The supported store performs an exact scan and sorts matches. It is intended
 for small collections; this repository does not publish benchmark results or
 claim indexed-search performance. Embeddings come from your application.
+
+The Rust crate and Python package are named `vekryx`; the public store type is
+`Vekryx` in both languages. This is a breaking package/API rename: update imports
+and rebuild the extension. Existing JSON snapshots retain the same format.
 
 ## Features
 
@@ -57,8 +61,8 @@ Requires **Rust 1.82+**, Cargo, and a native linker/build toolchain. Python is n
 required for the default Rust build.
 
 ```bash
-git clone https://github.com/SuleymanSuleymanzade/vector_database.git
-cd vector_database
+git clone https://github.com/SuleymanSuleymanzade/Vekryx.git
+cd Vekryx
 cargo build --lib
 cargo run --example rust_usage
 ```
@@ -67,7 +71,7 @@ For another local Rust project, add the repository as a path dependency:
 
 ```toml
 [dependencies]
-vector_database = { path = "/path/to/vector_database" }
+vekryx = { path = "/path/to/Vekryx" }
 ```
 
 ### Python
@@ -103,10 +107,10 @@ feature and extension-module mode are enabled by Python packaging automatically.
 ### Rust
 
 ```rust
-use vector_database::{distance::Cosine, store::Store};
+use vekryx::{distance::Cosine, Vekryx};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut store = Store::new(3)?;
+    let mut store = Vekryx::new(3)?;
     store.insert("chunk-a".into(), vec![1.0, 0.0, 0.0])?;
     store.insert("chunk-b".into(), vec![0.0, 1.0, 0.0])?;
 
@@ -114,8 +118,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(matches, vec![("chunk-a".into(), 0.0), ("chunk-b".into(), 1.0)]);
 
     std::fs::create_dir_all("data")?;
-    store.save("data/vectors.json")?;
-    let restored = Store::load("data/vectors.json")?;
+    store.save("data/vekryx.json")?;
+    let restored = Vekryx::load("data/vekryx.json")?;
     assert_eq!(restored.len(), 2);
     Ok(())
 }
@@ -125,19 +129,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```python
 from pathlib import Path
-from vector_database import VectorStore
+from vekryx import Vekryx
 
-store = VectorStore(dimensions=3)
+store = Vekryx(dimensions=3)
 store.insert("chunk-a", [1.0, 0.0, 0.0])
 store.insert("chunk-b", [0.0, 1.0, 0.0])
 
 matches = store.search([1.0, 0.0, 0.0], k=2, metric="cosine")
 assert matches == [("chunk-a", 0.0), ("chunk-b", 1.0)]
 
-path = Path("data/vectors.json")
+path = Path("data/vekryx.json")
 path.parent.mkdir(parents=True, exist_ok=True)
 store.save(path)
-restored = VectorStore.load(path)
+restored = Vekryx.load(path)
 assert len(restored) == 2
 print("Snapshot:", path.resolve())
 ```
@@ -150,7 +154,7 @@ match the configured positive dimension and contain only finite numbers.
 ## Architecture
 
 ```text
-Document → chunking → leaf text → your embedding model → Store
+Document → chunking → leaf text → your embedding model → Vekryx
 Query ────────────────────────→ same embedding model ──→ search / MMR
                                                           ↓
                                                   IDs + query distances
@@ -158,14 +162,14 @@ Query ────────────────────────�
                                                your chunk / parent lookup
 ```
 
-- [Store](src/store.rs) owns records, validates vectors, ranks matches, and selects MMR results.
+- [Vekryx](src/store.rs) owns records, validates vectors, ranks matches, and selects MMR results.
 - [DistanceMetric](src/algorithms/distance.rs) separates Euclidean/cosine behavior from storage.
 - [TextSplitter and ChunkingStrategy](src/chunking/mod.rs) separate flat splitting from hierarchy construction. `HierarchicalChunker::from_splitters` composes custom splitters.
 - [Snapshot writer](src/state_manager/snapshot.rs) replaces JSON files through a temporary file in the same directory.
 - [Python bindings](src/python.rs) adapt the store; [chunk bindings](src/chunking/python.rs) expose read-only chunk records.
 
 The legacy KD-tree/LSH prototypes and `src/main.rs` demonstration are separate
-from the supported store. They do not accelerate `Store` or `VectorStore`.
+from the supported store. They do not accelerate `Vekryx`.
 There is no persistent CLI store, embedding model, or automatic parent expansion.
 
 ## Usage
@@ -189,9 +193,9 @@ MMR is a selection strategy, not a separate distance. Python defaults to cosine
 for MMR; Rust accepts a `DistanceMetric` implementation explicitly.
 
 ```python
-from vector_database import VectorStore
+from vekryx import Vekryx
 
-store = VectorStore(2)
+store = Vekryx(2)
 store.insert("a", [1.0, 0.0])
 store.insert("b", [1.0, 0.0])
 store.insert("c", [0.6, 0.8])
@@ -218,7 +222,7 @@ Returned numbers are query distances, not MMR scores, and need not be sorted.
 | Parent–child hierarchy | `HierarchicalChunker(chunk_sizes=[1024, 256])` | Search small leaves, then resolve larger parents through a separate lookup. |
 
 ```python
-from vector_database import HierarchicalChunker
+from vekryx import HierarchicalChunker
 
 text = "Rust stores vectors. Python retrieves chunks."
 chunks = HierarchicalChunker(chunk_sizes=[32, 12], overlap=2).chunk(text, "guide")
@@ -249,7 +253,7 @@ Persistence is explicit in both APIs: `save(path)` writes a JSON snapshot and
 against the process's current working directory. There is no default database
 location or automatic saving.
 
-The quick starts and full usage examples write **`data/vectors.json`**, containing:
+The quick starts and full usage examples write **`data/vekryx.json`**, containing:
 
 ```json
 {"dimensions":3,"vectors":{"chunk-a":[1.0,0.0,0.0],"chunk-b":[0.0,1.0,0.0]}}

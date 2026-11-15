@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Install the Python API in an isolated virtual environment.
+# Install the Vekryx Python API in an isolated virtual environment.
 set -euo pipefail
 
 usage() {
     cat <<'HELP'
 Usage: bash install.sh [--python EXECUTABLE] [--venv DIRECTORY]
 
-Build and install vector_database in a virtual environment (default: .venv next
+Build and install Vekryx in a virtual environment (default: .venv next
 to this script). Requires Cargo/Rust, a native build toolchain, and Python
 3.8–3.12 with venv support. Build dependencies are installed automatically.
 
@@ -76,6 +76,6 @@ venv_python="$venv_dir/bin/python"
 "$venv_python" -m pip --version >/dev/null 2>&1 || die "pip is missing from the selected environment."
 printf 'Installing with %s into %s\n' "$("$venv_python" --version)" "$venv_dir"
 PYO3_PYTHON="$venv_python" "$venv_python" -m pip install "$repo_dir"
-"$venv_python" -c 'from vector_database import VectorStore, FixedSizeChunker, HierarchicalChunker; assert len(VectorStore(3)) == 0; print("Import check passed")'
+"$venv_python" -c 'from vekryx import Vekryx, FixedSizeChunker, HierarchicalChunker; assert len(Vekryx(3)) == 0; print("Import check passed")'
 printf '\nInstalled successfully. Activate with:\n  source %q\n' "$venv_dir/bin/activate"
 printf 'Then run:\n  python %q\n' "$repo_dir/examples/python_usage.py"

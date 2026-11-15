@@ -14,7 +14,7 @@ use algorithms::kdtree as kdtree;
 use crate::algorithms::fast_search::FastSearch; 
 
 fn main() {
-    // // let mut db = crate::vector_db::VectorDB::new();
+    // // let mut db = crate::vector_db::Vekryx::new();
     // // db.add_vector([1.0, 2.0, 3.0]);
     // // db.add_vector([4.0, 5.0, 6.0]);
 

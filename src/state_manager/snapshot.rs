@@ -11,7 +11,7 @@ pub fn save(path: &Path, contents: &[u8]) -> io::Result<()> {
         .unwrap_or(Path::new("."));
     let (temporary, mut file) = loop {
         let candidate = parent.join(format!(
-            ".vector-store-{}-{}.tmp",
+            ".vekryx-{}-{}.tmp",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));

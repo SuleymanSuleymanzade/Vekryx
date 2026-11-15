@@ -1,7 +1,7 @@
 """Run with: python examples/basic_usage.py"""
-from vector_database import VectorStore
+from vekryx import Vekryx
 
-store = VectorStore(dimensions=3)
+store = Vekryx(dimensions=3)
 store.insert("apple", [1.0, 2.0, 3.0])
 store.insert("orange", [4.0, 5.0, 6.0])
 print("Apple:", store.get("apple"))

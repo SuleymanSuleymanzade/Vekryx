@@ -3,8 +3,8 @@
 Fork the repository, clone your fork, and create a focused branch:
 
 ```bash
-git clone git@github.com:YOUR_NAME/vector_database.git
-cd vector_database
+git clone git@github.com:YOUR_NAME/Vekryx.git
+cd Vekryx
 git switch -c describe-your-change
 ```
 

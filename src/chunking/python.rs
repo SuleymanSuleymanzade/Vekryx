@@ -2,7 +2,7 @@ use super::{Chunk, ChunkingStrategy, FixedSizeChunker, HierarchicalChunker};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-#[pyclass(name = "Chunk", module = "vector_database", frozen, get_all)]
+#[pyclass(name = "Chunk", module = "vekryx", frozen, get_all)]
 struct PyChunk {
     id: String,
     parent_id: Option<String>,
@@ -36,7 +36,7 @@ fn chunk(strategy: &dyn ChunkingStrategy, text: &str, document_id: &str) -> PyRe
         .collect())
 }
 
-#[pyclass(name = "FixedSizeChunker", module = "vector_database")]
+#[pyclass(name = "FixedSizeChunker", module = "vekryx")]
 struct PyFixedSizeChunker {
     strategy: FixedSizeChunker,
 }
@@ -57,7 +57,7 @@ impl PyFixedSizeChunker {
     }
 }
 
-#[pyclass(name = "HierarchicalChunker", module = "vector_database")]
+#[pyclass(name = "HierarchicalChunker", module = "vekryx")]
 struct PyHierarchicalChunker {
     strategy: HierarchicalChunker,
 }

@@ -1,6 +1,6 @@
 import unittest
 
-from vector_database import FixedSizeChunker, HierarchicalChunker, VectorStore
+from vekryx import FixedSizeChunker, HierarchicalChunker, Vekryx
 
 
 class ChunkingTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class ChunkingTests(unittest.TestCase):
         chunks = HierarchicalChunker(chunk_sizes=[60, 20], overlap=4).chunk(text, "guide")
         lookup = {c.id: c for c in chunks}
         self.assertEqual(len(lookup), len(chunks))
-        store = VectorStore(2)
+        store = Vekryx(2)
         for c in chunks:
             self.assertEqual(c.text, text[c.start:c.end])
             if c.parent_id is not None:

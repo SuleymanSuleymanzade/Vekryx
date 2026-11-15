@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Store {
+pub struct Vekryx {
     dimensions: usize,
     vectors: BTreeMap<String, Vec<f64>>,
 }
 
-impl Store {
+impl Vekryx {
     pub fn new(dimensions: usize) -> Result<Self, String> {
         if dimensions == 0 {
             return Err("dimensions must be greater than zero".into());
@@ -173,7 +173,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::Store;
+    use super::Vekryx;
 
     #[test]
     fn disk_snapshots_replace_round_trip_and_report_invalid_data() {
@@ -183,7 +183,7 @@ mod tests {
             time::{SystemTime, UNIX_EPOCH},
         };
         let directory = std::env::temp_dir().join(format!(
-            "vector-store-test-{}-{}",
+            "vekryx-test-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -192,23 +192,23 @@ mod tests {
         ));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("vectors.json");
-        let mut store = Store::new(2).unwrap();
+        let mut store = Vekryx::new(2).unwrap();
         store.insert("item".into(), vec![1.0, 2.0]).unwrap();
         store.save(&path).unwrap();
         store.insert("item".into(), vec![3.0, 4.0]).unwrap();
         store.save(&path).unwrap();
         assert_eq!(
-            Store::load(&path).unwrap().get("item").unwrap(),
+            Vekryx::load(&path).unwrap().get("item").unwrap(),
             &vec![3.0, 4.0]
         );
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
         fs::write(&path, "invalid JSON").unwrap();
         assert_eq!(
-            Store::load(&path).unwrap_err().kind(),
+            Vekryx::load(&path).unwrap_err().kind(),
             ErrorKind::InvalidData
         );
         assert_eq!(
-            Store::load(directory.join("absent")).unwrap_err().kind(),
+            Vekryx::load(directory.join("absent")).unwrap_err().kind(),
             ErrorKind::NotFound
         );
         assert!(store.save(directory.join("absent/vectors.json")).is_err());
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn cosine_and_mmr_rank_diverse_results_and_validate_options() {
         use crate::distance::{Cosine, Euclidean};
-        let mut store = Store::new(2).unwrap();
+        let mut store = Vekryx::new(2).unwrap();
         store.insert("a".into(), vec![1.0, 0.0]).unwrap();
         store.insert("b".into(), vec![1.0, 0.0]).unwrap();
         store.insert("c".into(), vec![0.6, 0.8]).unwrap();
@@ -253,7 +253,7 @@ mod tests {
             assert!(store.mmr_search(&query, 2, 3, lambda, &Cosine).is_err());
         }
         assert!(store.mmr_search(&query, 3, 2, 0.5, &Cosine).is_err());
-        assert!(Store::new(2)
+        assert!(Vekryx::new(2)
             .unwrap()
             .search_with_metric(&[0.0, 0.0], 5, &Cosine)
             .is_err());
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn mmr_handles_negative_similarity_and_returns_selection_order() {
         use crate::distance::Cosine;
-        let mut store = Store::new(2).unwrap();
+        let mut store = Vekryx::new(2).unwrap();
         store.insert("a".into(), vec![1.0, 0.0]).unwrap();
         store.insert("b".into(), vec![-0.6, 0.8]).unwrap();
         store.insert("c".into(), vec![-1.0, 0.0]).unwrap();
@@ -277,7 +277,7 @@ mod tests {
             vec!["a", "c", "b"]
         );
         assert!(results[1].1 > results[2].1);
-        assert!(Store::new(2)
+        assert!(Vekryx::new(2)
             .unwrap()
             .mmr_search(&[1.0, 0.0], 5, 20, 0.5, &Cosine)
             .unwrap()
@@ -293,7 +293,7 @@ mod tests {
                 Ok(left.iter().zip(right).map(|(a, b)| (a - b).abs()).sum())
             }
         }
-        let mut store = Store::new(2).unwrap();
+        let mut store = Vekryx::new(2).unwrap();
         store.insert("a".into(), vec![3.0, 0.0]).unwrap();
         store.insert("b".into(), vec![2.0, 2.0]).unwrap();
         assert_eq!(
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn ranks_preserves_collisions_and_breaks_ties_by_id() {
-        let mut store = Store::new(2).unwrap();
+        let mut store = Vekryx::new(2).unwrap();
         store.insert("b".into(), vec![1.0, 0.0]).unwrap();
         store.insert("a".into(), vec![1.0, 0.0]).unwrap();
         store.insert("c".into(), vec![3.0, 0.0]).unwrap();
@@ -325,20 +325,20 @@ mod tests {
 
     #[test]
     fn validates_updates_and_round_trips() {
-        assert!(Store::new(0).is_err());
-        let mut store = Store::new(2).unwrap();
+        assert!(Vekryx::new(0).is_err());
+        let mut store = Vekryx::new(2).unwrap();
         assert!(store.insert("a".into(), vec![1.0]).is_err());
         assert!(store.insert("a".into(), vec![f64::NAN, 0.0]).is_err());
         assert!(store.insert("".into(), vec![0.0, 0.0]).is_err());
         store.insert("a".into(), vec![1.0, 2.0]).unwrap();
         store.insert("a".into(), vec![3.0, 4.0]).unwrap();
         assert_eq!(store.len(), 1);
-        let mut restored = Store::from_json(&store.to_json().unwrap()).unwrap();
+        let mut restored = Vekryx::from_json(&store.to_json().unwrap()).unwrap();
         assert_eq!(restored.get("a").unwrap(), &vec![3.0, 4.0]);
         assert!(restored.delete("a"));
         assert!(!restored.delete("a"));
         assert!(restored.search(&[0.0, 0.0], 5).unwrap().is_empty());
         assert!(restored.search(&[0.0], 5).is_err());
-        assert!(Store::from_json(r#"{"dimensions":2,"vectors":{"a":[1.0]}}"#).is_err());
+        assert!(Vekryx::from_json(r#"{"dimensions":2,"vectors":{"a":[1.0]}}"#).is_err());
     }
 }

@@ -2,13 +2,13 @@ pub type Vector = [f32; 3];
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub struct VectorDB {
+pub struct Vekryx {
     vectors: Vec<Vector>,
 }
 
-impl VectorDB {
+impl Vekryx {
     pub fn new() -> Self {
-        VectorDB { vectors: Vec::new() }
+        Vekryx { vectors: Vec::new() }
     }
 
    pub fn add_vector(&mut self, vector: Vector) {
@@ -21,8 +21,8 @@ impl VectorDB {
     
     pub fn find_closest(&self, query: Vector) -> Option<&Vector> {
             self.vectors.iter().min_by(|&a, &b| {
-                let distance_a = VectorDB::euclidean_distance(&query, a);
-                let distance_b = VectorDB::euclidean_distance(&query, b);
+                let distance_a = Vekryx::euclidean_distance(&query, a);
+                let distance_b = Vekryx::euclidean_distance(&query, b);
                 distance_a.partial_cmp(&distance_b).unwrap()
             })
         }

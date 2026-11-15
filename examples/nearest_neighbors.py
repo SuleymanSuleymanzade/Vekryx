@@ -1,8 +1,8 @@
 """Run with: python examples/nearest_neighbors.py"""
-from vector_database import VectorStore
+from vekryx import Vekryx
 
 # Coordinates are supplied directly; the store does not generate embeddings.
-store = VectorStore(dimensions=2)
+store = Vekryx(dimensions=2)
 for record_id, coordinates in {
     "origin": [0.0, 0.0],
     "east": [1.0, 0.0],

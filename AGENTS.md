@@ -6,8 +6,8 @@ This Rust 2021 project implements vector storage and nearest-neighbor search wit
 
 - `src/algorithms/` contains KD-tree, locality-sensitive hashing (LSH), vector storage, and the `FastSearch` trait; `src/algorithms.rs` declares these modules.
 - `src/state_manager/local_saver.rs` handles JSON persistence.
-- `src/lib.rs` defines the PyO3 bindings and Python module; `src/main.rs` runs a standalone LSH demonstration.
-- Rust unit tests live beside their implementation. `tests/python_test/` contains exploratory Python scripts, rather than an automated Python test suite.
+- `src/lib.rs` exports `Vekryx`; `src/python.rs` defines optional PyO3 bindings; `src/main.rs` runs a standalone LSH demonstration.
+- Rust unit tests live beside their implementation. `tests/python_test/` contains regression tests for the installed Python API and exploratory scripts.
 - `assets/` holds README illustrations; `local_file.json` is sample persisted state.
 
 ## Build, Test, and Development Commands
@@ -16,12 +16,12 @@ Run commands from the repository root:
 
 - `cargo build` — compile the Rust binary and shared library.
 - `cargo run` — execute the LSH demonstration.
-- `cargo test --bin vector_database` — run algorithm unit tests through the binary target.
+- `cargo test --bin vekryx` — run algorithm unit tests through the binary target.
 - `cargo fmt --check` — check standard Rust formatting; use `cargo fmt` to apply it.
 - `cargo clippy --all-targets` — inspect compiler and lint diagnostics.
 - `maturin develop` — build/install the Python extension inside an activated virtual environment, as described in `README.md`. Install Python and maturin first.
 
-The Python interface is experimental: the Cargo library name, PyO3 module name, and example imports currently differ. Check those names before relying on the Python scripts. Use `Cargo.toml` as the dependency reference; `contribution.md` includes older versions.
+The official project name is Vekryx. Use `vekryx` for the Rust crate and Python module, and `Vekryx` for the public store type. Keep naming consistent across bindings, examples, and docs. Use `Cargo.toml` as the dependency reference.
 
 ## Coding Style & Naming Conventions
 

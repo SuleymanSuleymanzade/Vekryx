@@ -3,7 +3,7 @@
 Toy keyword features demonstrate the pipeline without an embedding dependency.
 Use the same real embedding model for documents and queries in an application.
 """
-from vector_database import FixedSizeChunker, HierarchicalChunker, VectorStore
+from vekryx import FixedSizeChunker, HierarchicalChunker, Vekryx
 
 text = (
     "Rust manages vector storage. Rust traits separate search strategies. "
@@ -23,7 +23,7 @@ def embed(value):
     return [1.0, float(value.count("rust")), float(value.count("python"))]
 
 
-store = VectorStore(dimensions=3)
+store = Vekryx(dimensions=3)
 for chunk in chunks:
     if chunk.is_leaf:
         store.insert(chunk.id, embed(chunk.text))

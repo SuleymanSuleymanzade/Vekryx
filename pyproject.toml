@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
-name = "vector_database"
+name = "vekryx"
 version = "0.1.0"
 requires-python = ">=3.8,<3.13"
 description = "Rust vector store with Euclidean, cosine, and MMR search"

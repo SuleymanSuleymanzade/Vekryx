@@ -4,6 +4,7 @@ pub mod distance;
 #[path = "state_manager/snapshot.rs"]
 mod snapshot;
 pub mod store;
+pub use store::Vekryx;
 
 #[cfg(feature = "python")]
 mod python;

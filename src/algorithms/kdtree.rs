@@ -73,7 +73,7 @@ impl KDTree{
         best_dist: f32) -> Option<&'b vector_db::Vector> {
             match node {
                 KDTreeNode::Leaf(point) => {
-                    let dist = vector_db::VectorDB::euclidean_distance(query, point);
+                    let dist = vector_db::Vekryx::euclidean_distance(query, point);
                     if dist < best_dist {
                         Some(point)
                     } else {
@@ -84,7 +84,7 @@ impl KDTree{
                     let next_node = if query[*split_dimension] < *split_value { left } else { right };
                     let other_node = if query[*split_dimension] < *split_value { right } else { left };
                     let updated_best = self.nearest(query, next_node, best, best_dist);
-                    let updated_best_dist = updated_best.map_or(best_dist, |v| vector_db::VectorDB::euclidean_distance(query, v));
+                    let updated_best_dist = updated_best.map_or(best_dist, |v| vector_db::Vekryx::euclidean_distance(query, v));
                     if (query[*split_dimension] - split_value).abs() < updated_best_dist {
                         self.nearest(query, other_node, updated_best, updated_best_dist)
                     } else {
