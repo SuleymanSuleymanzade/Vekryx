@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="264" height="22" viewBox="0 0 264 22" role="img" aria-labelledby="title">
+  <title id="title">Rust 1.82 or newer; Python 3.8 through 3.12</title>
+  <g fill="#21262d">
+    <rect width="111" height="22"/>
+    <rect x="119" width="145" height="22"/>
+  </g>
+  <g fill="#f0f6fc" font-family="monospace" font-size="11" text-anchor="middle">
+    <text x="55.5" y="15">RUST 1.82+</text>
+    <text x="191.5" y="15">PYTHON 3.8–3.12</text>
+  </g>
+</svg>
