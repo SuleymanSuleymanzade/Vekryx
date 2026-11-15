@@ -147,6 +147,27 @@ impl Vekryx {
         self.view().search_with_metric(query, k, metric)
     }
 
+    /// Exact search with explicit retrieval options and named distance results.
+    pub fn search_with_options(
+        &self,
+        query: &[f64],
+        metric: &dyn DistanceMetric,
+        options: &crate::SearchOptions,
+    ) -> Result<Vec<crate::SearchHit>, Error> {
+        self.view().search_with_options(query, metric, options)
+    }
+
+    pub fn mmr_search_with_options(
+        &self,
+        query: &[f64],
+        metric: &dyn DistanceMetric,
+        options: &crate::SearchOptions,
+        mmr: &crate::MmrOptions,
+    ) -> Result<Vec<crate::SearchHit>, Error> {
+        self.view()
+            .mmr_search_with_options(query, metric, options, mmr)
+    }
+
     pub fn mmr_search(
         &self,
         query: &[f64],

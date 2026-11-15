@@ -35,9 +35,10 @@ Rust and optional Python APIs. Store numeric vectors by string ID, retrieve
 nearest neighbors, diversify results with maximal marginal relevance (MMR), and
 split text into flat or hierarchical chunks before embedding.
 
-The supported store performs an exact scan and sorts matches. It is intended
-for small collections; this repository does not publish benchmark results or
-claim indexed-search performance. Python can generate embeddings through optional
+The default search methods perform an exact scan and sort matches. Build an
+index to use **HNSW, IVF-Flat, PQ, or residual IVF-PQ** through the same vector,
+MMR, and hybrid pipelines. These are initial in-memory implementations; the
+repository does not publish representative performance benchmarks. Python can generate embeddings through optional
 model adapters; Rust accepts vectors from your application.
 
 The Rust crate and Python package are named `vekryx`; the public store type is
@@ -51,10 +52,13 @@ original text and metadata when supplied.
 - **Filter before search:** exact metadata matching before ranking and candidate limits.
 - **Hybrid retrieval:** BM25 keyword search fused with vector rankings using weighted RRF.
 - **Exact retrieval:** Euclidean and cosine distances with deterministic ties.
+- **Approximate retrieval:** seeded HNSW graphs, trained IVF lists, product quantization, and residual IVF-PQ.
 - **Diverse results:** MMR selection over a configurable nearest-candidate pool.
 - **Text preparation:** fixed-size, overlapping, and hierarchical parent–child chunks.
 - **Explicit persistence:** interoperable JSON snapshots for Rust and Python.
-- **Trait-based extension:** independent metrics, flat splitters, and chunking strategies.
+- **Composable retrieval:** index builders, typed backend query options, and shared vector/MMR/hybrid pipelines.
+- **Explicit result semantics:** named distances with precision tags, separate hybrid fusion scores.
+- **Trait-based extension:** independent metrics, candidate indexes, flat splitters, and chunking strategies.
 
 The Rust core uses ownership and typed interfaces to separate storage from
 search behavior. Python bindings call the same implementation through PyO3.
@@ -220,47 +224,67 @@ match the configured positive dimension and contain only finite numbers.
 
 ```mermaid
 flowchart TD
-    D[Document] --> C[Optional chunking]
-    C --> T[Text or dictionary record]
-    T --> ID[Optional ID or generated UUID]
-    ID --> E[Embedding adapter]
-    E --> V[Validate vector and inferred dimensions]
-    V --> S[(Rust store: IDs, vectors, text, metadata)]
-    S <--> P[Atomic JSON snapshots]
-    Q[Query text] --> QE[Same embedding adapter]
-    W[Metadata where filter] --> F[Filter corpus first]
-    S --> F
-    QE --> VS[Vector scoring on filtered corpus]
-    F --> VS
-    F --> BM[BM25 on filtered text corpus]
-    Q --> BM
-    VS --> NN[Nearest vector results]
-    VS --> M[MMR candidate selection]
-    VS --> R[Weighted reciprocal rank fusion]
-    BM --> R
-    R --> H[Top k hybrid results: ID and fusion score]
-    NN --> L[Record lookup by ID]
-    M --> L
-    H --> L
+    D[Documents] --> C[Optional chunking and embedding adapters]
+    C --> S[(Vekryx: stable IDs, vectors, text, metadata)]
+    S <--> P[Atomic JSON snapshots: canonical data only]
+    S --> F[Corpus: optional metadata filter]
+    F --> B[IndexBuilder: construction and training settings]
+    B --> I[SearchSession: fixed corpus, metric, backend]
+    Q[Query vector and typed SearchOptions] --> I
+    I --> R[CandidateIndex: retrieve eligible IDs and distances]
+    EX[ExactSearch / HNSW / IVF-Flat / PQ / IVF-PQ] --> R
+    PQ[PQ: compressed subvector codes] --> IP[IVF-PQ: centroid residual encoding]
+    IP --> R
+    R --> V[Validate IDs, distances and limits; deduplicate]
+    V --> E[Optional exact distance reranking]
+    E --> K[Top k SearchHit results]
+    E --> M[MMR selection: SearchHit in selection order]
+    E --> H[Weighted reciprocal rank fusion]
+    F --> BM[BM25: eligible text corpus]
+    T[Query text] --> BM
+    BM --> L[Optional keyword candidate limit]
+    L --> H
+    H --> FH[Top k FusionHit results]
 ```
 
-The diagram uses a fenced `mermaid` block that GitHub renders directly. Metadata
-filtering precedes scoring, BM25 corpus statistics, MMR `fetch_k`, and final `k`.
-The query embedding is computed independently; only eligible records are ranked.
+[Standalone SVG schematic](assets/architecture_vec_db.svg).
+All backends shown are implemented. HNSW and IVF-Flat return exact distances
+for approximate candidate sets; PQ variants can report approximate distances
+or use the shared exact reranker.
 
-- [Vekryx](src/store.rs) owns vectors and records, validates mutations, and exposes snapshots.
-- [Corpus](src/search.rs) borrows the store for filtered ranking and MMR selection.
-- [Hybrid ranking](src/hybrid.rs) combines BM25 and vector ranks after filtering.
-- [DistanceMetric](src/distance.rs) separates Euclidean/cosine behavior from storage.
-- [TextSplitter and ChunkingStrategy](src/chunking/mod.rs) separate flat splitting from hierarchy construction. `HierarchicalChunker::from_splitters` composes custom splitters.
-- [Snapshot writer](src/state_manager/snapshot.rs) replaces JSON files through a temporary file in the same directory.
-- [Python bindings](src/python.rs) adapt the store; [chunk bindings](src/chunking/python.rs) expose read-only chunk records.
+- [Vekryx](src/store.rs) owns canonical records and vectors, validates mutations, and saves snapshots.
+- [Corpus](src/search.rs) borrows an eligible corpus and exposes filter-aware iteration/lookup to backends.
+- [IndexBuilder and CandidateIndex](src/index.rs) separate construction/training from query-time candidate retrieval. `ExactSearch` implements both traits; HNSW, IVF, PQ, and IVF-PQ use separate
+  configuration/builders and trained index types in [src/index/](src/index).
+- `SearchSession` binds the built backend to one immutable corpus and one `DistanceMetric`.
+- [Search pipeline](src/search.rs) validates candidates, deduplicates IDs, optionally recomputes approximate distances, and applies top-k or MMR selection.
+- [Hybrid ranking](src/hybrid.rs) combines a bounded vector ranking with BM25 using weighted RRF.
+- [DistanceMetric](src/distance.rs) supplies distances, MMR similarities, and optional built-in geometry identification for specialized builders.
+- [TextSplitter and ChunkingStrategy](src/chunking/mod.rs) separate flat splitting from hierarchy construction.
+- [Snapshot writer](src/state_manager/snapshot.rs) atomically replaces JSON files on the same filesystem.
+- [Python bindings](src/python.rs) adapt the shared pipelines; [Python options](python/vekryx/search.py) expose immutable options and named results.
 
-The experimental KD-tree/LSH prototypes are separate
-from the supported store. They do not accelerate `Vekryx`.
-There is no persistent CLI store or automatic parent expansion. Python's optional
-[embedding adapters](python/vekryx/embeddings.py) prepare vectors before calling
-the Rust store.
+Filtering precedes candidate limits and BM25 statistics. Backends must respect the
+bound corpus; the shared pipeline rejects unknown or filtered-out IDs rather than
+returning them. A backend can return fewer candidates than requested. The pipeline
+does not silently fill missing results with an exact scan.
+
+A session borrows its corpus and metric. Rust prevents mutation of the store or
+filter while that session remains in use. End the session, mutate canonical data,
+and build a new session to rebuild/retrain the backend. This first interface uses
+immutable sessions rather than claiming universal incremental-update support.
+Indexes, training state, and session options are not serialized into store snapshots.
+Python `build_index()` instead owns an independent snapshot of eligible records
+and its trained backend; source store mutations leave that snapshot unchanged.
+Build a new Python index to include edits. This ownership avoids self-referential
+borrows across the Python boundary, at the cost of copying the eligible corpus.
+Filtered sessions are built for their particular eligible corpus; reusing one global
+index across changing filters is not implemented.
+
+The experimental KD-tree/LSH prototypes remain separate from this pipeline and do
+not accelerate `Vekryx`. There is no persistent CLI store or automatic parent
+expansion. Python's optional [embedding adapters](python/vekryx/embeddings.py)
+prepare vectors before calling Rust.
 
 
 ### Repository Structure
@@ -275,11 +299,19 @@ Vekryx/
 │   ├── lib.rs                   # Public Rust API and feature gates
 │   ├── main.rs                  # Small supported-store demo: cargo run
 │   ├── store.rs                 # Vekryx, Record, CRUD, validated snapshot decoding
-│   ├── search.rs                # Borrowed Corpus, exact ranking, MMR
+│   ├── index.rs                 # IndexBuilder, CandidateIndex, ExactSearch, SearchSession
+│   ├── index/
+│   │   ├── hnsw.rs              # Multilayer graph, heaps, diversity pruning
+│   │   ├── ivf.rs               # Coarse quantizer and inverted lists
+│   │   ├── pq.rs                # Subvector codebooks, ADC, residual IVF-PQ
+│   │   ├── training.rs          # Deterministic k-means and numeric helpers
+│   │   └── tests.rs             # Recall, filtering, validation, shared pipelines
+│   ├── search.rs                # Corpus, typed options/results, shared ranking and MMR
 │   ├── hybrid.rs                # BM25 and weighted reciprocal rank fusion
 │   ├── distance.rs              # DistanceMetric, Euclidean, Cosine
 │   ├── error.rs                 # Shared Error enum
 │   ├── python.rs                # PyO3 bridge to the Rust store
+│   ├── python/index.rs          # Owned Python index snapshots and dispatch
 │   ├── chunking/
 │   │   ├── mod.rs               # Chunk, TextSplitter, ChunkingStrategy
 │   │   ├── fixed_size.rs        # FixedSizeChunker: splitter and chunk producer
@@ -298,15 +330,20 @@ Vekryx/
 │       └── persistence.rs       # Serde-based LocalSaver
 ├── python/vekryx/
 │   ├── __init__.py              # Public Python facade, IDs, records, filters
-│   └── embeddings.py            # EmbeddingModel protocol and provider adapters
+│   ├── embeddings.py            # EmbeddingModel protocol and provider adapters
+│   ├── search.py                # Immutable options and named search/fusion results
+│   └── index.py                 # Typed backend settings and built index facade
 ├── examples/
 │   ├── rust_usage.rs / python_usage.py
+│   ├── ann_search.rs / ann_search.py
+│   ├── search_pipeline.rs / search_pipeline.py
 │   ├── hybrid_search.rs / hybrid_search.py
 │   ├── basic_usage.py / nearest_neighbors.py / cosine_and_mmr.py
 │   ├── hierarchical_chunking.py / persistence.py / embedding_models.py
 │   ├── store_smoke.py
 │   └── experimental/lsh_prototype.py
 ├── tests/
+│   ├── search_interface.rs      # Downstream backend contract tests
 │   ├── python_test/test_*.py     # Tests against the installed Python package
 │   └── fixtures/legacy_kdtree.json  # Historical experimental snapshot
 ├── assets/                      # README artwork
@@ -328,30 +365,68 @@ interface-style polymorphism. There is no base-store inheritance hierarchy.
 ```mermaid
 classDiagram
     class Vekryx {
-        -dimensions: usize
-        -vectors: BTreeMap
-        -records: BTreeMap
-        +insert(id, vector)
-        +insert_record(id, vector, record)
+        -dimensions
+        -vectors
+        -records
         +view() Corpus
         +filtered_view(filter) Corpus
+        +search_with_options(query, metric, options)
         +save(path)
-        +load(path) Vekryx
-    }
-    class Record {
-        +text: Option~String~
-        +metadata: JSON
     }
     class Corpus {
-        +search(query, k)
-        +search_with_metric(query, k, metric)
-        +mmr_search(query, k, fetch_k, lambda, metric)
-        +hybrid_search(text, query, k, metric, weight, rrf_k)
+        +vectors()
+        +get(id)
+        +contains(id)
+        +build_index(builder, metric) SearchSession
+    }
+    class IndexBuilder {
+        <<trait>>
+        +build(corpus, metric) Index
+    }
+    class CandidateIndex {
+        <<trait>>
+        +SearchOptions associated_type
+        +guarantee() RetrievalGuarantee
+        +candidates(corpus, query, metric, limit, options)
+    }
+    class ExactSearch
+    class HnswConfig
+    class HnswIndex
+    class IvfConfig
+    class IvfIndex
+    class PqConfig
+    class PqIndex
+    class IvfPqConfig
+    class IvfPqIndex
+    class SearchSession {
+        -corpus
+        -metric
+        -index
+        +search(query, options) SearchHit[]
+        +mmr_search(query, options, mmr) SearchHit[]
+        +hybrid_search(text, query, options, hybrid) FusionHit[]
+        +guarantee() RetrievalGuarantee
     }
     class DistanceMetric {
         <<trait>>
+        +kind() optional_builtin_geometry
         +distance(left, right)
         +similarity(left, right)
+    }
+    class SearchOptions {
+        +k
+        +candidates
+        +rerank_exact
+        +backend typed_options
+    }
+    class SearchHit {
+        +id
+        +distance
+        +distance_kind
+    }
+    class FusionHit {
+        +id
+        +fusion_score
     }
     class Euclidean
     class Cosine
@@ -365,17 +440,31 @@ classDiagram
     }
     class FixedSizeChunker
     class HierarchicalChunker
-    class Chunk
-    Vekryx "1" *-- "0..*" Record : owns
     Corpus --> Vekryx : borrows
-    Corpus ..> DistanceMetric : uses
-    DistanceMetric <|.. Euclidean : implements
-    DistanceMetric <|.. Cosine : implements
-    TextSplitter <|.. FixedSizeChunker : implements
-    ChunkingStrategy <|.. FixedSizeChunker : implements
-    ChunkingStrategy <|.. HierarchicalChunker : implements
-    HierarchicalChunker "1" *-- "1..*" TextSplitter : owns boxed splitters
-    ChunkingStrategy ..> Chunk : produces
+    Corpus ..> IndexBuilder : builds
+    IndexBuilder ..> CandidateIndex : produces
+    IndexBuilder <|.. ExactSearch
+    CandidateIndex <|.. ExactSearch
+    IndexBuilder <|.. HnswConfig
+    IndexBuilder <|.. IvfConfig
+    IndexBuilder <|.. PqConfig
+    IndexBuilder <|.. IvfPqConfig
+    CandidateIndex <|.. HnswIndex
+    CandidateIndex <|.. IvfIndex
+    CandidateIndex <|.. PqIndex
+    CandidateIndex <|.. IvfPqIndex
+    SearchSession --> Corpus : borrows through view
+    SearchSession *-- CandidateIndex : owns backend
+    SearchSession --> DistanceMetric : borrows fixed metric
+    SearchSession ..> SearchOptions : accepts
+    SearchSession ..> SearchHit : vector and MMR
+    SearchSession ..> FusionHit : hybrid
+    DistanceMetric <|.. Euclidean
+    DistanceMetric <|.. Cosine
+    TextSplitter <|.. FixedSizeChunker
+    ChunkingStrategy <|.. FixedSizeChunker
+    ChunkingStrategy <|.. HierarchicalChunker
+    HierarchicalChunker *-- TextSplitter : composes
 ```
 
 `Corpus` is a view, not a subclass of `Vekryx`. It borrows the store and an
@@ -386,14 +475,19 @@ Python's `where=` searches use the borrowed view internally.
 
 | Interface | Implementations | Role and contract |
 | --- | --- | --- |
+| `IndexBuilder` | `ExactSearch`, `HnswConfig`, `IvfConfig`, `PqConfig`, `IvfPqConfig`, downstream builders | Own build/training settings; validate supported geometry/dimensions; produce a session-local candidate index. |
+| `CandidateIndex` | `ExactSearch`, `HnswIndex`, `IvfIndex`, `PqIndex`, `IvfPqIndex`, downstream backends | Associated typed query options; retrieve eligible stable IDs and finite, nonnegative distances. Declare exact or approximate candidate selection. |
 | `DistanceMetric: Send + Sync` | `Euclidean`, `Cosine`, user-defined Rust metrics | Strategy for distance and MMR similarity. Distances must be finite and nonnegative; similarities must be finite and larger for more related pairs. Default similarity is `1 / (1 + distance)`. |
 | `TextSplitter: Send + Sync` | `FixedSizeChunker`, user-defined Rust splitters | Return nonempty, in-bounds character ranges in document order. Offsets count Unicode scalar values. |
 | `ChunkingStrategy: Send + Sync` | `FixedSizeChunker`, `HierarchicalChunker` | Produce document-scoped `Chunk` records. Hierarchy composes `Box<dyn TextSplitter>`. |
 | Python `EmbeddingModel` protocol | `SentenceTransformerEmbeddings`, `HuggingFaceEmbeddings`, `OpenAIEmbeddings`, custom adapters | Implement `embed_document(text)` and `embed_query(text)`; return one finite, nonempty numeric vector. No inheritance is required. |
 | Experimental `FastSearch` | `KDTree`, `LinearIndex` | Associated `Vector` type and `nearest_neighbor`; persistence is independent. Experimental LSH has its own candidate API and does not implement this trait. |
 
-Rust retrieval accepts `&dyn DistanceMetric`, so a caller selects a strategy per
-search without changing the store type. Python resolves the names `"euclidean"`
+Compatibility methods accept `&dyn DistanceMetric` per call. A built session
+fixes its metric at construction; queries cannot substitute another metric.
+`DistanceMetric::kind()` identifies Euclidean/cosine geometry; custom metrics default
+to `None` and still work with `ExactSearch`. Specialized builders must reject
+unsupported metrics explicitly. Python resolves the names `"euclidean"`
 and `"cosine"` to those implementations. Arbitrary Python metrics and custom
 Python splitters are not exposed by the current bindings; custom embedding
 adapters are supported through structural typing.
@@ -404,6 +498,9 @@ adapters are supported through structural typing.
 | --- | --- | --- |
 | Keep vectors and records private in `Vekryx` | Encapsulation | Mutations validate IDs, dimensions, and finite values before changing state. Public `Deserialize` also passes through a private, validated snapshot representation. |
 | Separate `Corpus` from storage | Read-only view object | Reuse vector, MMR, and hybrid retrieval on the same eligible corpus without cloning stored data. Filter matching and exact scoring still scan entries. |
+| Bind backend, corpus, and metric in a borrowed session | Composition and lifecycle safety | Construction is separate from querying. End the session before mutations, then rebuild; no stale index state is hidden in the store. |
+| Use associated backend query options | Typed extension point | New backends introduce their own settings without adding irrelevant HNSW/IVF fields to every request. |
+| Separate candidate recall from distance precision | Explicit result contract | Exact reranking improves distances within retrieved candidates; it does not recover missing neighbors. |
 | Inject metrics through a trait | Strategy pattern and dependency inversion | Retrieval depends on the metric interface; adding a Rust metric does not change storage. Trait objects allow runtime selection. |
 | Compose hierarchy from flat splitters | Composition over inheritance | Each level can use a different `TextSplitter`; the hierarchy owns parent/child construction and offset translation. |
 | Keep Python orchestration outside Rust search | Facade and adapter patterns | Python handles embedding providers and convenient inputs; PyO3 converts arguments and errors; Rust owns validation and ranking. |
@@ -414,7 +511,8 @@ adapters are supported through structural typing.
 
 Exact search scores all eligible vectors and sorts results: for `n` eligible
 vectors of dimension `d`, ordinary retrieval costs `O(n*d + n*log(n))` and keeps
-`O(n)` scored candidates before truncation. A borrowed view avoids corpus copies;
+`O(n)` scored candidates before truncation. The shared pipeline also keeps the
+returned candidate pool for validation and ranking. A borrowed view avoids corpus copies;
 it does not turn the scan into an index or eliminate ranking allocations.
 
 ### Rust API Compatibility
@@ -422,6 +520,9 @@ it does not turn the scan into an index or eliminate ranking allocations.
 Retrieval, metric, and chunking methods return `vekryx::Error`; custom trait
 implementations use that error type. `Vekryx::get` returns `Option<&[f64]>`.
 `save`/`load` return `std::io::Result`, and `to_json` returns a Serde JSON result.
+Existing tuple-returning search/MMR/hybrid methods retain their defaults and
+result shapes. New `*_with_options` methods return named records.
+`Corpus::build_index()` is the Rust backend extension entry point.
 The supported snapshot fields are shared with Python. Experimental index
 representations are separate and should not be treated as supported snapshots.
 
@@ -432,6 +533,268 @@ The examples below pair the same workflows in Rust and Python. Each code block
 is self-contained unless stated otherwise. Record examples in a separate Rust
 application also need `serde_json = "1"` in `[dependencies]`.
 
+
+### Composable Search Interface
+
+Use an index session to select a Rust backend once, then reuse the same vector,
+MMR, and hybrid methods. Built-ins are `ExactSearch`, `HnswConfig`, `IvfConfig`,
+`PqConfig`, and `IvfPqConfig`.
+
+```rust
+use vekryx::{
+    distance::Cosine,
+    index::{ExactSearch, RetrievalGuarantee},
+    HybridOptions, MmrOptions, SearchOptions, Vekryx,
+};
+
+fn main() -> Result<(), vekryx::Error> {
+    let mut store = Vekryx::new(2)?;
+    store.insert("a".into(), vec![1.0, 0.0])?;
+    store.insert("b".into(), vec![0.0, 1.0])?;
+    let session = store.view().build_index(&ExactSearch, &Cosine)?;
+    let options = SearchOptions { candidates: 20, ..SearchOptions::new(5) };
+    let hits = session.search(&[1.0, 0.0], &options)?;
+    assert_eq!(hits[0].id, "a");
+    assert_eq!(session.guarantee(), RetrievalGuarantee::Exact);
+    let diverse = session.mmr_search(&[1.0, 0.0], &options, &MmrOptions::default())?;
+    let fused = session.hybrid_search("example", &[1.0, 0.0], &options, &HybridOptions::default())?;
+    assert_eq!(diverse.len(), 2);
+    assert!(fused[0].fusion_score > 0.0);
+    Ok(())
+}
+```
+
+For exact search without a reusable session, `Vekryx` and `Corpus` both expose
+`search_with_options(query, metric, options)`,
+`mmr_search_with_options(query, metric, options, mmr)`, and
+`hybrid_search_with_options(text, query, metric, options, hybrid)`.
+
+Python exposes exact options-driven pipelines on `Vekryx`.
+`Vekryx.build_index(config, metric=..., where=...)` creates an immutable
+`SearchIndex` with `search`, `mmr_search`, and `hybrid_search` methods; see below.
+Custom Python backend registration is not exposed.
+
+```python
+from vekryx import MmrOptions, SearchOptions, Vekryx
+
+store = Vekryx(2)
+store.insert("a", [1, 0])
+store.insert("b", [0, 1])
+options = SearchOptions(k=1, candidates=10)
+hits = store.search_with_options([1, 0], options, metric="cosine")
+assert (hits[0].id, hits[0].distance, hits[0].distance_kind) == ("a", 0, "exact")
+diverse = store.mmr_search_with_options([1, 0], options, mmr=MmrOptions(lambda_mult=0.2))
+assert diverse[0].id == "a"
+```
+
+For text queries with an embedding model, call
+`store.hybrid_search_with_options(text, options, hybrid=HybridOptions(...), where=...)`.
+The [Rust](examples/search_pipeline.rs) and [Python](examples/search_pipeline.py)
+examples demonstrate filtering and all three result paths offline.
+
+| Setting / result | Contract |
+| --- | --- |
+| `SearchOptions.k` | Maximum final result count. Rust `SearchOptions::new(k)` defaults `candidates` to `k`; Python defaults `k=5` and `candidates=None` resolves to `k`. |
+| `SearchOptions.candidates` | Backend candidate limit before reranking, MMR, or fusion; must be at least `k`. This replaces `fetch_k` in the new MMR interface. |
+| `SearchOptions.rerank_exact` | Defaults to true. Recompute approximate distances from canonical vectors, then sort; already exact distances are retained. Does not upgrade candidate recall. |
+| Rust `SearchOptions.backend` | Backend-specific associated query-options type: `HnswSearchOptions`, `IvfSearchOptions`, or `()` for exact/PQ. Python uses those option dataclasses or `None`. |
+| `MmrOptions.lambda_mult` | Finite value in `[0,1]`, default `0.5`; selection operates only on the retrieved pool. |
+| `HybridOptions` | `vector_weight=0.5`, `rrf_k=60`, `keyword_candidates=None` (complete eligible BM25 ranking). Vector ranking is limited by `SearchOptions.candidates`. |
+| `SearchHit` | `id`, `distance`, `distance_kind`. Smaller distance is better; MMR outputs selection order. Rust uses `DistanceKind`, Python uses `"exact"` / `"approximate"`. |
+| `FusionHit` | `id`, `fusion_score`; larger scores first. |
+| `SearchSession.guarantee()` | Exact or approximate candidate selection, independent of each hit's distance precision. An exact session with a truncated fusion pool does not promise full-ranking hybrid equivalence. |
+
+Distances must use the bound metric's units: an L2 backend must convert squared
+L2 scores before returning candidates. The pipeline validates finite, nonnegative
+distances, checks eligible IDs and the raw candidate limit, deduplicates by ID,
+and breaks distance ties by ID. Invalid backend output returns an error. Duplicate
+IDs never consume multiple final slots; identical vectors with distinct IDs remain
+separate records. Approximate backends may underfill and miss true neighbors even
+when all returned distances are exact.
+
+The existing `hybrid_search` preserves complete-ranking fusion. Its new options
+variant deliberately bounds the vector list; limiting either ranking can change
+fusion scores and final results even with an exact candidate backend. Metadata
+filters still precede limits and BM25 statistics. `keyword_candidates` limits the
+ranked keyword list, not the cost of scanning/scoring text.
+
+#### Adding a Backend or Encoding
+
+1. Define a builder containing construction/training settings and implement
+   `IndexBuilder`. Use the supplied filtered `Corpus` to train/build, and reject
+   unsupported `DistanceMetric::kind()` values or dimensions.
+2. Return a `CandidateIndex` with an associated `SearchOptions` type for query
+   controls. Return eligible stable IDs, distances, and `DistanceKind`; declare
+   `RetrievalGuarantee::Exact` only if true top-candidate retrieval is guaranteed.
+3. Build through `corpus.build_index(&builder, &metric)`. Shared validation,
+   reranking, MMR, and fusion work without editing the store or duplicating those
+   pipelines. The session always supplies the corpus and metric used at build time.
+4. Keep compression internal to the backend: IVF with full vectors and IVF-PQ can
+   implement the same contract. PQ is an encoding technique, not a mutually
+   exclusive alternative to a retrieval structure. No public encoder trait is
+   imposed before an encoding implementation establishes its requirements.
+5. Compare against `ExactSearch` for recall and ranking, and measure build time,
+   latency, memory, filtering, and rebuild cost. See
+   [downstream contract tests](tests/search_interface.rs) for a custom backend
+   with typed options, approximate distances, and deliberately missing candidates.
+
+Incremental index mutation and index persistence remain future work. All four
+approximate backends below use immutable build/train sessions.
+
+### HNSW, IVF, and Product Quantization
+
+| Builder | Candidate retrieval | Supported metrics | Query options |
+| --- | --- | --- | --- |
+| `HnswConfig` | Seeded multilayer proximity graph; greedy upper-layer descent and bounded best-first bottom-layer search, with diversity-based link pruning. | Euclidean, cosine | `HnswSearchOptions { ef_search }` |
+| `IvfConfig` | Train centroids, assign inverted lists, probe nearest lists, and score their full vectors. | Euclidean, cosine (spherical training on normalized vectors) | `IvfSearchOptions { nprobe }` |
+| `PqConfig` | Train independent subvector codebooks and scan all compressed codes using asymmetric distance lookup tables. | Euclidean | Rust `()` / Python `None` |
+| `IvfPqConfig` | IVF coarse centroids plus PQ-trained residuals; score codes only in probed lists. | Euclidean | `IvfSearchOptions { nprobe }` |
+
+These implementations follow the [HNSW paper](https://arxiv.org/abs/1603.09320)
+and its [parameter definitions](https://github.com/nmslib/hnswlib/blob/master/ALGO_PARAMS.md),
+with IVF/PQ organization described in the
+[Faiss index guide](https://github.com/facebookresearch/faiss/wiki/Faiss-indexes).
+They are native Rust implementations, not wrappers around those libraries.
+Construction uses a local seeded random generator and deterministic tie-breaking;
+no new runtime dependencies or `experimental` feature are required.
+
+#### Rust: build once, query repeatedly
+
+```rust
+use vekryx::{
+    distance::Euclidean,
+    index::{HnswConfig, HnswSearchOptions, IvfConfig, IvfPqConfig, IvfSearchOptions, PqConfig},
+    SearchOptions, Vekryx,
+};
+
+fn main() -> Result<(), vekryx::Error> {
+    let mut store = Vekryx::new(4)?;
+    for i in 0..32 {
+        store.insert(format!("{i:02}"), vec![i as f64, 1.0, (i % 5) as f64, 2.0])?;
+    }
+    let query = [6.0, 1.0, 1.0, 2.0];
+    let graph = store.view().build_index(&HnswConfig::default(), &Euclidean)?;
+    let hits = graph.search(&query, &SearchOptions {
+        candidates: 16,
+        backend: HnswSearchOptions { ef_search: 64 },
+        ..SearchOptions::new(3)
+    })?;
+    assert_eq!(hits[0].id, "06");
+
+    let ivf = IvfConfig { nlist: 4, ..IvfConfig::default() };
+    let pq = PqConfig { subquantizers: 2, bits: 2, ..PqConfig::default() };
+    let lists = store.view().build_index(&ivf, &Euclidean)?;
+    let quantized = store.view().build_index(&pq, &Euclidean)?;
+    let combined = store.view().build_index(&IvfPqConfig { ivf, pq }, &Euclidean)?;
+    let list_options = SearchOptions {
+        candidates: 32,
+        backend: IvfSearchOptions { nprobe: 4 },
+        ..SearchOptions::new(3)
+    };
+    assert_eq!(lists.search(&query, &list_options)?[0].id, "06");
+    assert_eq!(combined.search(&query, &list_options)?[0].id, "06");
+    let pq_options = SearchOptions { candidates: 32, ..SearchOptions::new(3) };
+    assert_eq!(quantized.search(&query, &pq_options)?[0].id, "06");
+    Ok(())
+}
+```
+
+Pass the same options to `session.mmr_search(query, options, mmr)` or
+`session.hybrid_search(text, query, options, hybrid)`. Use a `filtered_view()`
+before building to restrict construction and retrieval to eligible records.
+The builder is not borrowed after construction, so temporary configs are valid.
+
+#### Python: immutable index snapshots
+
+```python
+from vekryx import (
+    HnswConfig, HnswSearchOptions, IvfConfig, IvfPqConfig, IvfSearchOptions,
+    PqConfig, SearchOptions, Vekryx,
+)
+
+store = Vekryx(4)
+for i in range(32):
+    store.insert(f"{i:02}", [i, 1, i % 5, 2])
+
+index = store.build_index(HnswConfig(), metric="euclidean")
+options = SearchOptions(k=3, candidates=16, backend=HnswSearchOptions(ef_search=64))
+assert index.search([6, 1, 1, 2], options)[0].id == "06"
+
+ivf = IvfConfig(nlist=4)
+pq = PqConfig(subquantizers=2, bits=2)
+for config in (ivf, pq, IvfPqConfig(ivf=ivf, pq=pq)):
+    index = store.build_index(config)
+    backend = None if isinstance(config, PqConfig) else IvfSearchOptions(nprobe=4)
+    hits = index.search([6, 1, 1, 2], SearchOptions(k=3, candidates=32, backend=backend))
+    assert hits[0].id == "06"
+```
+
+For text, the index retains the store's embedding adapter and exposes
+`index.search(text, options)`, `index.mmr_search(text, options, mmr=...)`, and
+`index.hybrid_search(text, options, hybrid=...)`. Filters are fixed at
+`build_index(config, where=...)`; queries cannot replace the filter or metric.
+The built index owns copies of eligible vectors and records. Source insertions,
+replacements, and deletions do not affect it: explicitly rebuild to include them.
+The existing `store.search` and `*_with_options` methods continue to use exact
+search. Backend query options on those store methods raise `ValueError`.
+
+#### Training, tuning, and result guarantees
+
+- **HNSW:** defaults `m=16`, `ef_construction=100`, `seed=42`, `ef_search=64`.
+  Require `m >= 2`, `ef_construction >= m`, and positive `ef_search`. The effective
+  search breadth is at least the requested candidate pool (bounded by corpus size).
+  Layer zero permits up to `2*m` neighbors; upper layers permit `m`. Larger graph
+  and exploration settings generally trade construction/memory/query cost for recall.
+- **IVF:** defaults `nlist=16`, `iterations=20`, `seed=42`, `nprobe=1`. Nonempty
+  training requires at least `nlist` eligible vectors. Require `1 <= nprobe <= nlist`.
+  Training uses seeded farthest-first initialization and Lloyd updates; cosine
+  uses spherical centroids. Probing all lists in IVF-Flat reproduces exact vector
+  ranking. Probing fewer lists may underfill or miss neighbors.
+- **PQ:** defaults `subquantizers=4`, `bits=4`, `iterations=20`, `seed=42`.
+  Dimensions must be divisible by the positive subquantizer count; `bits` is
+  between 1 and 8. Nonempty training requires at least `2**bits` eligible vectors
+  for each codebook. Codes use **one byte per subquantizer**, including when
+  `bits < 8`; sub-byte codes are not bit-packed. Codebooks and training use `f64`.
+  Standalone PQ still scans every code, so it is exhaustive over compressed
+  representations but approximate in distance/ranking.
+- **IVF-PQ:** configure nested `ivf` and `pq` settings. Train one global set of
+  residual subvector codebooks after coarse clustering. Both training size
+  constraints apply. Per probed list, subtract its centroid from the query and
+  use residual-code lookup tables; this differs from applying PQ to raw vectors.
+
+Valid configurations can build empty indexes, which return no results. Invalid
+settings are rejected even on empty corpora. Zero cosine vectors and unsupported
+metrics are rejected during construction. Non-finite/unrepresentable computed
+distances return errors rather than entering ranking.
+
+All four ANN indexes conservatively report `RetrievalGuarantee::Approximate`
+(Python `index.guarantee == "approximate"`). HNSW and IVF-Flat report exact
+**distances** for retrieved records. PQ variants initially report estimated L2
+(not squared L2); `rerank_exact=True` recomputes canonical distances for the
+retrieved pool. Increasing the pool can improve reranked recall. Reranking cannot
+recover neighbors missing from that pool. To compare with an exact oracle, use
+the same metric, filter, and stable IDs.
+
+PQ compresses the **index code payload**, not canonical storage: full `f64`
+vectors remain in `Vekryx` for lookup and reranking. Python additionally copies
+its eligible corpus into the built snapshot. Do not interpret code bytes per
+vector as total process memory. There is no index serialization, incremental
+mutation, concurrent build machinery, SIMD/GPU acceleration, or production-scale
+performance claim in this initial implementation.
+
+Run the [Rust comparison example](examples/ann_search.rs) for recall@10 against
+exact search and illustrative build/query timings, or the
+[Python example](examples/ann_search.py) for all four filtered pipelines:
+
+```bash
+cargo run --release --example ann_search
+python examples/ann_search.py
+```
+
+The comparison uses 256 synthetic eight-dimensional vectors and 16 deterministic
+queries. Those timings are a demonstration, not a representative ANN benchmark.
+Rust tests also cover independent PQ reconstruction, graph topology, bounded
+list/graph exploration, filtering, duplicates, invalid settings, and extreme values.
 
 ### Insert, Update, Retrieve, and Delete
 
@@ -620,14 +983,15 @@ stemming or stop-word removal; repeated query tokens count once. BM25 statistics
 are computed only from eligible records with text, including empty texts. Records
 without original text can contribute to vector results but not keyword results.
 
-The two full rankings are combined using
+The compatibility `hybrid_search` method combines the two full rankings using
 [reciprocal rank fusion](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion):
 `vector_weight / (rrf_k + vector_rank) + (1 - vector_weight) / (rrf_k + keyword_rank)`.
 Ranks start at 1; absent ranks contribute zero. `rrf_k` defaults to 60 and must be
 positive. `vector_weight` must be finite and between 0 and 1: 0 returns keyword
 matches only; 1 uses vector ranks only. A query with no keyword matches falls back
 to vector ranking unless its vector weight is zero. Keyword-only mode still embeds
-and validates the query. This is exact in-memory retrieval, with no search index.
+and validates the query. This compatibility method uses the exact scan backend;
+the options/session interface also accepts bounded vector candidate rankings.
 Python metadata filters and Rust `filtered_view()` borrow the matching corpus;
 they avoid copying stored vectors and records.
 
@@ -943,6 +1307,8 @@ assert store.search("cats", k=1, metric="cosine")[0][0] == "cats"
 | [Rust usage](examples/rust_usage.rs) / [Python usage](examples/python_usage.py) | Matching storage, retrieval, chunking, and disk workflows. |
 | [Basic operations](examples/basic_usage.py) | Updates, deletion, missing IDs, and validation. |
 | [Nearest neighbors](examples/nearest_neighbors.py) | Distances, ties, and identical vectors under different IDs. |
+| [ANN algorithms: Rust](examples/ann_search.rs) / [Python](examples/ann_search.py) | HNSW, IVF-Flat, PQ, residual IVF-PQ, and exact-oracle recall comparison. |
+| [Search pipeline: Rust](examples/search_pipeline.rs) / [Python](examples/search_pipeline.py) | Typed options, filtered sessions, named results, MMR, and hybrid fusion. |
 | [Hybrid retrieval: Rust](examples/hybrid_search.rs) / [Python](examples/hybrid_search.py) | Filtered BM25 and vector fusion. |
 | [Cosine and MMR](examples/cosine_and_mmr.py) | Relevance versus diversity. |
 | [Hierarchical chunks](examples/hierarchical_chunking.py) | Leaf retrieval and parent expansion with clearly labeled toy features. |
@@ -961,6 +1327,8 @@ The full usage examples replace their selected snapshot with sample records.
 ```bash
 # Rust core; no Python required.
 cargo test --all-targets --features experimental
+cargo test --doc
+cargo fmt --check
 cargo clippy --all-targets --features experimental -- -D warnings
 bash -n install.sh
 
@@ -972,7 +1340,9 @@ PYO3_PYTHON="$VIRTUAL_ENV/bin/python" cargo test --lib --features python
 ```
 
 Tests cover numeric validation, metrics, MMR, hierarchy invariants, disk
-persistence, and the installed Python API. Dependency and build configuration
+persistence, downstream backend contracts, session mutation safety, bounded hybrid
+fusion, HNSW recall/topology, IVF all-list equivalence, PQ reconstruction and
+reranking, owned Python index snapshots, and the installed Python API. Dependency and build configuration
 live in [Cargo.toml](Cargo.toml) and [pyproject.toml](pyproject.toml).
 
 See [Contributing](contribution.md) for setup, focused validation, and pull

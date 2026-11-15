@@ -9,11 +9,19 @@ from .embeddings import (
     EmbeddingModel, SentenceTransformerEmbeddings, HuggingFaceEmbeddings,
     OpenAIEmbeddings, _vector,
 )
+from .search import SearchOptions, MmrOptions, HybridOptions, SearchHit, FusionHit
+from .index import (
+    HnswConfig, HnswSearchOptions, IvfConfig, IvfSearchOptions, PqConfig,
+    IvfPqConfig, SearchIndex, _config_json, _CONFIGS,
+)
 
 __all__ = [
     "Vekryx", "Chunk", "FixedSizeChunker", "HierarchicalChunker",
     "EmbeddingModel", "SentenceTransformerEmbeddings", "HuggingFaceEmbeddings",
     "OpenAIEmbeddings",
+    "SearchOptions", "MmrOptions", "HybridOptions", "SearchHit", "FusionHit",
+    "HnswConfig", "HnswSearchOptions", "IvfConfig", "IvfSearchOptions",
+    "PqConfig", "IvfPqConfig", "SearchIndex",
 ]
 
 
@@ -147,6 +155,13 @@ class Vekryx:
     def delete(self, id):
         return self._store.delete(id)
 
+    def build_index(self, config, *, metric="euclidean", where=None):
+        """Build/train an immutable index snapshot; rebuild after source edits."""
+        config_json = _config_json(config)
+        native = self._store.build_index(config_json, metric=metric,
+                                         filter_json=self._filter(where))
+        return SearchIndex(native, self._embedding_model, _CONFIGS[type(config)])
+
     def search(self, query, k=5, *, metric="euclidean", where=None):
         filter_json = self._filter(where)
         return self._store.search(self._encode(query, query=True), k, metric=metric,
@@ -171,6 +186,53 @@ class Vekryx:
         return self._store.hybrid_search(
             query, self._encode(query, query=True), k, metric=metric,
             vector_weight=vector_weight, rrf_k=rrf_k, filter_json=filter_json)
+
+    @staticmethod
+    def _search_hits(rows):
+        return [SearchHit(id, distance, "exact" if exact else "approximate")
+                for id, distance, exact in rows]
+
+    def search_with_options(self, query, options=None, *, metric="euclidean", where=None):
+        """Exact retrieval with named distance results and an explicit candidate pool."""
+        options = SearchOptions() if options is None else options
+        if options.backend is not None:
+            raise ValueError("backend query options require build_index()")
+        filter_json = self._filter(where)
+        return self._search_hits(self._store.search_with_options(
+            self._encode(query, query=True), options.k, options.candidates,
+            options.rerank_exact, metric=metric, filter_json=filter_json))
+
+    def mmr_search_with_options(self, query, options=None, *, mmr=None,
+                                metric="cosine", where=None):
+        """Diversify options.candidates records down to options.k named hits."""
+        options = SearchOptions(candidates=20) if options is None else options
+        if options.backend is not None:
+            raise ValueError("backend query options require build_index()")
+        mmr = MmrOptions() if mmr is None else mmr
+        filter_json = self._filter(where)
+        return self._search_hits(self._store.mmr_search_with_options(
+            self._encode(query, query=True), options.k, options.candidates,
+            options.rerank_exact, mmr.lambda_mult, metric=metric, filter_json=filter_json))
+
+    def hybrid_search_with_options(self, query, options=None, *, hybrid=None,
+                                   metric="cosine", where=None):
+        """Fuse a bounded vector ranking with BM25; return named fusion scores.
+
+        Unlike hybrid_search, the vector ranking is limited to options.candidates.
+        keyword_candidates=None keeps the complete eligible BM25 ranking.
+        """
+        if not isinstance(query, str):
+            raise TypeError("hybrid_search query must be text")
+        options = SearchOptions() if options is None else options
+        if options.backend is not None:
+            raise ValueError("backend query options require build_index()")
+        hybrid = HybridOptions() if hybrid is None else hybrid
+        filter_json = self._filter(where)
+        rows = self._store.hybrid_search_with_options(
+            query, self._encode(query, query=True), options.k, options.candidates,
+            options.rerank_exact, hybrid.vector_weight, hybrid.rrf_k,
+            hybrid.keyword_candidates, metric=metric, filter_json=filter_json)
+        return [FusionHit(id, score) for id, score in rows]
 
     def save(self, path):
         """Save vectors, text, metadata, and dimensions; model configuration is not serialized."""
