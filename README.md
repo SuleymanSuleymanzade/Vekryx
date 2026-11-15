@@ -35,15 +35,19 @@ split text into flat or hierarchical chunks before embedding.
 
 The supported store performs an exact scan and sorts matches. It is intended
 for small collections; this repository does not publish benchmark results or
-claim indexed-search performance. Embeddings come from your application.
+claim indexed-search performance. Python can generate embeddings through optional
+model adapters; Rust accepts vectors from your application.
 
 The Rust crate and Python package are named `vekryx`; the public store type is
 `Vekryx` in both languages. This is a breaking package/API rename: update imports
-and rebuild the extension. Existing JSON snapshots retain the same format.
+and rebuild the extension. Existing vector-only JSON snapshots remain readable; new snapshots also retain
+original text and metadata when supplied.
 
 ## Features
 
-- **ID-based storage:** insert, retrieve, replace, and delete finite `f64` vectors.
+- **Record storage:** optional UUIDs in Python, original text, JSON metadata, and finite `f64` vectors.
+- **Filter before search:** exact metadata matching before ranking and candidate limits.
+- **Hybrid retrieval:** BM25 keyword search fused with vector rankings using weighted RRF.
 - **Exact retrieval:** Euclidean and cosine distances with deterministic ties.
 - **Diverse results:** MMR selection over a configurable nearest-candidate pool.
 - **Text preparation:** fixed-size, overlapping, and hierarchical parent–child chunks.
@@ -127,6 +131,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Python
 
+To embed text automatically, install a provider extra in your virtual environment:
+
+```bash
+python -m pip install '.[sentence-transformers]'
+# Other choices: '.[huggingface]' for hosted inference, '.[openai]' for OpenAI.
+```
+
+```python
+from vekryx import Vekryx
+
+store = Vekryx(embedding_model="sentence-transformers/all-MiniLM-L6-v2")
+cats_id = store.insert("Cats are small domestic animals.")
+store.insert("Rust is a systems programming language.")
+# Optional explicit ID: store.insert("Some text", id="my-chunk")
+print(store.dimensions)  # Inferred from the model's output, never hardcoded.
+print(store.search("Tell me about pets", k=1, metric="cosine"))
+print(store.mmr_search("Tell me about pets", k=2))
+```
+
+An unqualified model string loads a local Sentence Transformers model from
+Hugging Face (or a local model directory). This downloads model weights on first
+use. To select a hosted provider, pass an adapter instead:
+
+```python
+from vekryx import Vekryx, OpenAIEmbeddings, HuggingFaceEmbeddings
+
+# Uses OPENAI_API_KEY; also accepts api_key, base_url, or an existing client.
+store = Vekryx(embedding_model=OpenAIEmbeddings("text-embedding-3-small"))
+
+# Select a sentence embedding model deployed by your HF provider/endpoint.
+store = Vekryx(embedding_model=HuggingFaceEmbeddings(
+    "sentence-transformers/all-MiniLM-L6-v2", token="your-hf-token"
+))
+```
+
+Hosted model availability depends on your provider. Hugging Face endpoints must
+return a single pooled sentence vector; token matrices are rejected rather than
+silently pooled. For local models, `SentenceTransformerEmbeddings(model, device="cpu",
+revision="commit-or-tag")` allows device and revision selection. Document/query
+encoding uses the model's respective methods when available.
+
+The constructor embeds a probe string to infer dimensions. With hosted adapters
+this makes an API request and may incur a charge. Subsequent insertions and
+queries use the same adapter and validate vector shape and finite values.
+Custom adapters implement `embed_document(text)` and `embed_query(text)`, each
+returning one numeric vector. Provider errors propagate without replacing stored
+vectors. The model can be inspected through `store.embedding_model`.
+
+Snapshots save vectors, dimensions, original text, and metadata. Reattach the **same model and
+configuration** with `Vekryx.load(path, embedding_model=model)` to search by text.
+Dimensions are checked on load; different models with the same dimensions cannot
+be detected. Credentials and model weights are never stored in snapshots. Original
+text is retained for text records; `get(id)` returns the stored vector, while
+`get_record(id)` returns ID, text, metadata, and vector.
+
+For applications that already generate embeddings, the numeric API remains:
+
 ```python
 from pathlib import Path
 from vekryx import Vekryx
@@ -146,23 +207,47 @@ assert len(restored) == 2
 print("Snapshot:", path.resolve())
 ```
 
-Inserting an existing ID replaces its vector. Rust `get` returns an `Option`;
+Python `insert` returns the supplied or generated UUID string. Inserting an
+existing ID replaces its vector, text, and metadata together; omitted metadata
+becomes an empty object. Legacy `insert("id", vector_or_text)` calls still work. Rust `get` returns an `Option`;
 Python `get` returns a copy or raises `KeyError`. `delete` returns whether the
 record existed in both APIs. IDs must be nonempty, and every vector/query must
 match the configured positive dimension and contain only finite numbers.
 
 ## Architecture
 
-```text
-Document → chunking → leaf text → your embedding model → Vekryx
-Query ────────────────────────→ same embedding model ──→ search / MMR
-                                                          ↓
-                                                  IDs + query distances
-                                                          ↓
-                                               your chunk / parent lookup
+```mermaid
+flowchart TD
+    D[Document] --> C[Optional chunking]
+    C --> T[Text or dictionary record]
+    T --> ID[Optional ID or generated UUID]
+    ID --> E[Embedding adapter]
+    E --> V[Validate vector and inferred dimensions]
+    V --> S[(Rust store: IDs, vectors, text, metadata)]
+    S <--> P[Atomic JSON snapshots]
+    Q[Query text] --> QE[Same embedding adapter]
+    W[Metadata where filter] --> F[Filter corpus first]
+    S --> F
+    QE --> VS[Vector scoring on filtered corpus]
+    F --> VS
+    F --> BM[BM25 on filtered text corpus]
+    Q --> BM
+    VS --> NN[Nearest vector results]
+    VS --> M[MMR candidate selection]
+    VS --> R[Weighted reciprocal rank fusion]
+    BM --> R
+    R --> H[Top k hybrid results: ID and fusion score]
+    NN --> L[Record lookup by ID]
+    M --> L
+    H --> L
 ```
 
+The diagram uses a fenced `mermaid` block that GitHub renders directly. Metadata
+filtering precedes scoring, BM25 corpus statistics, MMR `fetch_k`, and final `k`.
+The query embedding is computed independently; only eligible records are ranked.
+
 - [Vekryx](src/store.rs) owns records, validates vectors, ranks matches, and selects MMR results.
+- [Hybrid ranking](src/hybrid.rs) combines BM25 and vector ranks after filtering.
 - [DistanceMetric](src/algorithms/distance.rs) separates Euclidean/cosine behavior from storage.
 - [TextSplitter and ChunkingStrategy](src/chunking/mod.rs) separate flat splitting from hierarchy construction. `HierarchicalChunker::from_splitters` composes custom splitters.
 - [Snapshot writer](src/state_manager/snapshot.rs) replaces JSON files through a temporary file in the same directory.
@@ -170,9 +255,82 @@ Query ────────────────────────�
 
 The legacy KD-tree/LSH prototypes and `src/main.rs` demonstration are separate
 from the supported store. They do not accelerate `Vekryx`.
-There is no persistent CLI store, embedding model, or automatic parent expansion.
+There is no persistent CLI store or automatic parent expansion. Python's optional
+[embedding adapters](python/vekryx/embeddings.py) prepare vectors before calling
+the Rust store.
 
 ## Usage
+
+### Dictionary Records and Filters
+
+```python
+from vekryx import Vekryx
+
+store = Vekryx(embedding_model="sentence-transformers/all-MiniLM-L6-v2")
+record_id = store.insert({
+    "text": "Cats are domestic animals.",
+    "metadata": {"domain": "animals", "language": "en", "published": True},
+})
+store.insert({
+    "text": "Rust prevents many memory errors.",
+    "metadata": {"domain": "programming", "language": "en"},
+})
+
+# All properties must match BEFORE ranking; excluded records cannot consume k.
+matches = store.search("pets", k=5, metric="cosine",
+                       where={"domain": "animals", "language": "en"})
+diverse = store.mmr_search("pets", k=2, fetch_k=10,
+                           where={"domain": "animals"})
+record = store.get_record(record_id)  # {id, text, metadata, vector}; owned copy
+```
+
+A dictionary record accepts `text`, `metadata`, and optional `id`; `text` must be a
+string. For plain text or vectors, use `metadata={...}` on `insert` instead.
+`where` matches top-level metadata properties with exact JSON equality and AND
+semantics. Nested objects/arrays match as complete values; there are no comparison
+operators, dotted paths, or implicit coercions. A missing property does not match
+`None`; an explicitly stored JSON null does. An empty filter matches every record,
+and no matching records produces `[]`. Metadata keys must be strings and values
+must be finite JSON values. Filters apply to vector, MMR, and hybrid search alike.
+
+### Hybrid Keyword and Vector Search
+
+```python
+results = store.hybrid_search(
+    "domestic cats", k=5,
+    where={"domain": "animals"},
+    vector_weight=0.5,
+)
+for id, score in results:
+    print(score, store.get_record(id)["text"])
+```
+
+`hybrid_search` requires a text query and an embedding model. It applies `where`
+first, ranks all eligible vectors by the selected distance (default `cosine`), and
+ranks eligible stored text using BM25 (`k1=1.2`, `b=0.75`, positive IDF). Tokenization
+splits on non-alphanumeric characters and lowercases Unicode tokens. There is no
+stemming or stop-word removal; repeated query tokens count once. BM25 statistics
+are computed only from eligible records with text, including empty texts. Records
+without original text can contribute to vector results but not keyword results.
+
+The two full rankings are combined using
+[reciprocal rank fusion](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion):
+`vector_weight / (rrf_k + vector_rank) + (1 - vector_weight) / (rrf_k + keyword_rank)`.
+Ranks start at 1; absent ranks contribute zero. `rrf_k` defaults to 60 and must be
+positive. `vector_weight` must be finite and between 0 and 1: 0 returns keyword
+matches only; 1 uses vector ranks only. A query with no keyword matches falls back
+to vector ranking unless its vector weight is zero. Keyword-only mode still embeds
+and validates the query. This is exact in-memory retrieval, with no search index.
+Metadata filters currently materialize a matching corpus, so they add copying cost.
+
+Hybrid results are `(ID, fusion_score)` with **larger scores first**, unlike the
+smaller-is-better distances from `search` and `mmr_search`. Ties sort by ID; only
+after fusion are results truncated to `k`. `k=0` returns `[]` after validation.
+
+Rust callers use `insert_record(id, vector, Record { text, metadata })`,
+`filtered(&metadata_filter)`, and then `hybrid_search(text, query_vector, k,
+&metric, vector_weight, rrf_k)` on the filtered store. See the runnable
+[Python example](examples/hybrid_search.py) and [Rust example](examples/hybrid_search.rs).
 
 ### Distance Selection
 

@@ -2,10 +2,18 @@ use crate::distance::{DistanceMetric, Euclidean};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Record {
+    pub text: Option<String>,
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vekryx {
     dimensions: usize,
     vectors: BTreeMap<String, Vec<f64>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    records: BTreeMap<String, Record>,
 }
 
 impl Vekryx {
@@ -16,6 +24,7 @@ impl Vekryx {
         Ok(Self {
             dimensions,
             vectors: BTreeMap::new(),
+            records: BTreeMap::new(),
         })
     }
 
@@ -32,10 +41,11 @@ impl Vekryx {
         self.vectors.get(id)
     }
     pub fn delete(&mut self, id: &str) -> bool {
+        self.records.remove(id);
         self.vectors.remove(id).is_some()
     }
 
-    fn validate(&self, vector: &[f64]) -> Result<(), String> {
+    pub(crate) fn validate(&self, vector: &[f64]) -> Result<(), String> {
         if vector.len() != self.dimensions {
             return Err(format!(
                 "expected {} dimensions, got {}",
@@ -54,8 +64,53 @@ impl Vekryx {
             return Err("id must not be empty".into());
         }
         self.validate(&vector)?;
+        self.records.remove(&id);
         self.vectors.insert(id, vector);
         Ok(())
+    }
+
+    pub fn insert_record(
+        &mut self,
+        id: String,
+        vector: Vec<f64>,
+        record: Record,
+    ) -> Result<(), String> {
+        self.insert(id.clone(), vector)?;
+        self.records.insert(id, record);
+        Ok(())
+    }
+
+    pub fn record(&self, id: &str) -> Option<&Record> {
+        self.records.get(id)
+    }
+
+    pub fn records(&self) -> impl Iterator<Item = (&String, &Record)> {
+        self.records.iter()
+    }
+
+    /// Materialize the matching corpus before ranking, candidate limits, or MMR.
+    /// All filter properties must match; missing properties never match null.
+    pub fn filtered(&self, filter: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let matches = |id: &String| {
+            filter.iter().all(|(key, value)| {
+                self.records.get(id).and_then(|r| r.metadata.get(key)) == Some(value)
+            })
+        };
+        Self {
+            dimensions: self.dimensions,
+            vectors: self
+                .vectors
+                .iter()
+                .filter(|(id, _)| matches(id))
+                .map(|(id, v)| (id.clone(), v.clone()))
+                .collect(),
+            records: self
+                .records
+                .iter()
+                .filter(|(id, _)| matches(id))
+                .map(|(id, r)| (id.clone(), r.clone()))
+                .collect(),
+        }
     }
 
     pub fn search(&self, query: &[f64], k: usize) -> Result<Vec<(String, f64)>, String> {
@@ -160,6 +215,13 @@ impl Vekryx {
         let store: Self = serde_json::from_str(json).map_err(|error| error.to_string())?;
         if store.dimensions == 0 {
             return Err("dimensions must be greater than zero".into());
+        }
+        if store
+            .records
+            .keys()
+            .any(|id| !store.vectors.contains_key(id))
+        {
+            return Err("record references a missing vector".into());
         }
         for (id, vector) in &store.vectors {
             if id.is_empty() {
