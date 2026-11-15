@@ -3,7 +3,20 @@
 //! for more related vectors and should have a comparable scale across pairs.
 use crate::Error;
 
+/// Built-in geometry that specialized index builders can explicitly support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricKind {
+    Euclidean,
+    Cosine,
+}
+
 pub trait DistanceMetric: Send + Sync {
+    /// Custom metrics default to no built-in geometry. Override only when the
+    /// distance has exactly the corresponding built-in semantics and units.
+    fn kind(&self) -> Option<MetricKind> {
+        None
+    }
+
     fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, Error>;
 
     /// Similarity used by MMR. Override when the metric has a natural similarity.
@@ -26,6 +39,10 @@ fn validate_pair(left: &[f64], right: &[f64]) -> Result<(), Error> {
 pub struct Euclidean;
 
 impl DistanceMetric for Euclidean {
+    fn kind(&self) -> Option<MetricKind> {
+        Some(MetricKind::Euclidean)
+    }
+
     fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, Error> {
         validate_pair(left, right)?;
         let distance = left
@@ -43,6 +60,10 @@ impl DistanceMetric for Euclidean {
 pub struct Cosine;
 
 impl DistanceMetric for Cosine {
+    fn kind(&self) -> Option<MetricKind> {
+        Some(MetricKind::Cosine)
+    }
+
     fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, Error> {
         Ok(1.0 - self.similarity(left, right)?)
     }

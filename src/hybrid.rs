@@ -1,10 +1,44 @@
-//! Exact BM25 and vector retrieval combined with weighted reciprocal rank fusion.
+//! BM25 and replaceable vector retrieval combined with weighted rank fusion.
 use crate::Error;
 use crate::{
     distance::DistanceMetric,
+    index::{CandidateIndex, ExactSearch, SearchSession},
+    search::SearchOptions,
     store::{Corpus, Vekryx},
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Hybrid result; larger fusion scores rank first, unlike vector distances.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FusionHit {
+    pub id: String,
+    pub fusion_score: f64,
+}
+
+/// Fusion settings, separate from vector candidate retrieval settings.
+#[derive(Debug, Clone, Copy)]
+pub struct HybridOptions {
+    pub vector_weight: f64,
+    pub rrf_k: usize,
+    /// None retains the complete BM25 ranking (the compatibility default).
+    pub keyword_candidates: Option<usize>,
+}
+
+impl Default for HybridOptions {
+    fn default() -> Self {
+        Self {
+            vector_weight: 0.5,
+            rrf_k: 60,
+            keyword_candidates: None,
+        }
+    }
+}
+
+fn fusion_pairs(hits: Vec<FusionHit>) -> Vec<(String, f64)> {
+    hits.into_iter()
+        .map(|hit| (hit.id, hit.fusion_score))
+        .collect()
+}
 
 fn tokens(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
@@ -27,6 +61,18 @@ impl Vekryx {
         self.view()
             .hybrid_search(text, query, k, metric, vector_weight, rrf_k)
     }
+
+    pub fn hybrid_search_with_options(
+        &self,
+        text: &str,
+        query: &[f64],
+        metric: &dyn DistanceMetric,
+        options: &SearchOptions,
+        hybrid: &HybridOptions,
+    ) -> Result<Vec<FusionHit>, Error> {
+        self.view()
+            .hybrid_search_with_options(text, query, metric, options, hybrid)
+    }
 }
 
 impl Corpus<'_> {
@@ -41,6 +87,53 @@ impl Corpus<'_> {
         vector_weight: f64,
         rrf_k: usize,
     ) -> Result<Vec<(String, f64)>, Error> {
+        // Preserve full-ranking fusion in the existing API.
+        self.hybrid_search_with_options(
+            text,
+            query,
+            metric,
+            &SearchOptions {
+                candidates: self.len().max(k),
+                ..SearchOptions::new(k)
+            },
+            &HybridOptions {
+                vector_weight,
+                rrf_k,
+                keyword_candidates: None,
+            },
+        )
+        .map(fusion_pairs)
+    }
+
+    pub fn hybrid_search_with_options(
+        &self,
+        text: &str,
+        query: &[f64],
+        metric: &dyn DistanceMetric,
+        options: &SearchOptions,
+        hybrid: &HybridOptions,
+    ) -> Result<Vec<FusionHit>, Error> {
+        self.build_index(&ExactSearch, metric)?
+            .hybrid_search(text, query, options, hybrid)
+    }
+}
+
+impl<I: CandidateIndex> SearchSession<'_, I> {
+    /// Fuse a bounded vector candidate ranking with BM25 on the bound corpus.
+    /// Truncating either input ranking can change fusion scores and final order.
+    pub fn hybrid_search(
+        &self,
+        text: &str,
+        query: &[f64],
+        options: &SearchOptions<I::SearchOptions>,
+        hybrid: &HybridOptions,
+    ) -> Result<Vec<FusionHit>, Error> {
+        let HybridOptions {
+            vector_weight,
+            rrf_k,
+            keyword_candidates,
+        } = *hybrid;
+        let k = options.k;
         if !vector_weight.is_finite() || !(0.0..=1.0).contains(&vector_weight) {
             return Err("vector_weight must be finite and between 0 and 1".into());
         }
@@ -48,14 +141,18 @@ impl Corpus<'_> {
             return Err("rrf_k must be greater than zero".into());
         }
         // Validate query shape even in keyword-only mode, but do not score vectors.
-        self.validate(query)?;
-        metric.distance(query, query)?;
+        options.validate()?;
+        self.validate_query(query)?;
         let vector_results = if vector_weight > 0.0 {
-            self.search_with_metric(query, self.len(), metric)?
+            self.retrieve(query, options)?
+                .into_iter()
+                .map(|hit| (hit.id, hit.distance))
+                .collect()
         } else {
             Vec::new()
         };
         let docs: Vec<_> = self
+            .corpus
             .records()
             .filter_map(|(id, record)| {
                 record
@@ -93,6 +190,9 @@ impl Corpus<'_> {
             }
         }
         lexical.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if let Some(limit) = keyword_candidates {
+            lexical.truncate(limit);
+        }
         let mut scores = BTreeMap::new();
         for (results, weight) in [
             (&vector_results, vector_weight),
@@ -109,7 +209,10 @@ impl Corpus<'_> {
         let mut results: Vec<_> = scores.into_iter().collect();
         results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         results.truncate(k);
-        Ok(results)
+        Ok(results
+            .into_iter()
+            .map(|(id, fusion_score)| FusionHit { id, fusion_score })
+            .collect())
     }
 }
 

@@ -1,10 +1,13 @@
 use crate::{
     chunking, distance,
+    index::DistanceKind,
     store::{Corpus, Record, Vekryx},
+    HybridOptions, MmrOptions, SearchHit, SearchOptions,
 };
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use std::path::PathBuf;
+mod index;
 
 /// An in-memory vector store with configurable exact search and JSON snapshots.
 #[pyclass(name = "Vekryx", module = "vekryx")]
@@ -51,6 +54,16 @@ impl PyVekryx {
 
     fn __len__(&self) -> usize {
         self.store.len()
+    }
+
+    #[pyo3(signature = (config_json, *, metric="euclidean", filter_json=None))]
+    fn build_index(
+        &self,
+        config_json: &str,
+        metric: &str,
+        filter_json: Option<&str>,
+    ) -> PyResult<index::PySearchIndex> {
+        index::build_index(self, config_json, metric, filter_json)
     }
 
     /// Insert a vector, replacing the existing vector when the ID already exists.
@@ -153,6 +166,103 @@ impl PyVekryx {
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
+    #[pyo3(signature = (query, k, candidates, rerank_exact, *, metric="euclidean", filter_json=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn search_with_options(
+        &self,
+        query: Vec<f64>,
+        k: usize,
+        candidates: usize,
+        rerank_exact: bool,
+        metric: &str,
+        filter_json: Option<&str>,
+    ) -> PyResult<Vec<(String, f64, bool)>> {
+        let metric =
+            distance::named_metric(metric).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let filter = parse_filter(filter_json)?;
+        let options = SearchOptions {
+            k,
+            candidates,
+            rerank_exact,
+            backend: (),
+        };
+        self.corpus(filter.as_ref())
+            .search_with_options(&query, metric.as_ref(), &options)
+            .map(named_distances)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    #[pyo3(signature = (query, k, candidates, rerank_exact, lambda_mult, *, metric="cosine", filter_json=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn mmr_search_with_options(
+        &self,
+        query: Vec<f64>,
+        k: usize,
+        candidates: usize,
+        rerank_exact: bool,
+        lambda_mult: f64,
+        metric: &str,
+        filter_json: Option<&str>,
+    ) -> PyResult<Vec<(String, f64, bool)>> {
+        let metric =
+            distance::named_metric(metric).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let filter = parse_filter(filter_json)?;
+        let options = SearchOptions {
+            k,
+            candidates,
+            rerank_exact,
+            backend: (),
+        };
+        self.corpus(filter.as_ref())
+            .mmr_search_with_options(
+                &query,
+                metric.as_ref(),
+                &options,
+                &MmrOptions { lambda_mult },
+            )
+            .map(named_distances)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    #[pyo3(signature = (text, query, k, candidates, rerank_exact, vector_weight, rrf_k, keyword_candidates=None, *, metric="cosine", filter_json=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn hybrid_search_with_options(
+        &self,
+        text: &str,
+        query: Vec<f64>,
+        k: usize,
+        candidates: usize,
+        rerank_exact: bool,
+        vector_weight: f64,
+        rrf_k: usize,
+        keyword_candidates: Option<usize>,
+        metric: &str,
+        filter_json: Option<&str>,
+    ) -> PyResult<Vec<(String, f64)>> {
+        let metric =
+            distance::named_metric(metric).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let filter = parse_filter(filter_json)?;
+        let options = SearchOptions {
+            k,
+            candidates,
+            rerank_exact,
+            backend: (),
+        };
+        let hybrid = HybridOptions {
+            vector_weight,
+            rrf_k,
+            keyword_candidates,
+        };
+        self.corpus(filter.as_ref())
+            .hybrid_search_with_options(text, &query, metric.as_ref(), &options, &hybrid)
+            .map(|hits| {
+                hits.into_iter()
+                    .map(|hit| (hit.id, hit.fusion_score))
+                    .collect()
+            })
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Atomically replace a JSON snapshot on the same filesystem.
     fn save(&self, path: PathBuf) -> PyResult<()> {
         self.store.save(path).map_err(Into::into)
@@ -170,9 +280,22 @@ impl PyVekryx {
     }
 }
 
+fn named_distances(hits: Vec<SearchHit>) -> Vec<(String, f64, bool)> {
+    hits.into_iter()
+        .map(|hit| {
+            (
+                hit.id,
+                hit.distance,
+                hit.distance_kind == DistanceKind::Exact,
+            )
+        })
+        .collect()
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVekryx>()?;
+    m.add_class::<index::PySearchIndex>()?;
     chunking::register(m)?;
     Ok(())
 }
