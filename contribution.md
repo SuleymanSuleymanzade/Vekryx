@@ -30,6 +30,7 @@ must continue to build without it.
 
 | Area | Location / extension point | Expected responsibility |
 | --- | --- | --- |
+| Hybrid retrieval | `src/hybrid.rs` | BM25 and weighted reciprocal rank fusion on the filtered corpus. |
 | Storage and MMR | `src/store.rs` | IDs, validation, ranking, selection, and snapshot API. |
 | Metrics | `src/algorithms/distance.rs`, `DistanceMetric` | Distance and similarity behavior independent of storage. |
 | Chunking | `src/chunking/`, `TextSplitter` and `ChunkingStrategy` | Flat splitting and hierarchy composition independent of embeddings. |
@@ -74,7 +75,9 @@ pre-existing warnings or formatting differences; report which targets you checke
 Persistence changes need disk round trips, replacement/error checks, and
 compatibility tests for the JSON format. Python and Rust must read each other's
 vector snapshots. Save paths are caller-selected; the API never saves implicitly.
-Chunk text and hierarchy metadata are separate from the vector snapshot.
+Record text and JSON metadata are saved with vectors; old vector-only snapshots
+remain readable. Chunk hierarchy relationships must be supplied as record metadata
+by the application if they should be persisted.
 Do not commit local environments or generated databases (`data/` is ignored).
 
 ## Pull Requests
