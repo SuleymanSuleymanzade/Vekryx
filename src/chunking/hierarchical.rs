@@ -2,6 +2,7 @@ use super::{
     boundaries, chunk_id, validate_document_id, validate_range, Chunk, ChunkingStrategy,
     FixedSizeChunker, TextSplitter,
 };
+use crate::Error;
 
 pub struct HierarchicalChunker {
     levels: Vec<Box<dyn TextSplitter>>,
@@ -9,7 +10,7 @@ pub struct HierarchicalChunker {
 
 impl HierarchicalChunker {
     /// Sizes must strictly decrease; overlap applies independently at each level.
-    pub fn new(chunk_sizes: Vec<usize>, overlap: usize) -> Result<Self, String> {
+    pub fn new(chunk_sizes: Vec<usize>, overlap: usize) -> Result<Self, Error> {
         if chunk_sizes.is_empty() || chunk_sizes.windows(2).any(|pair| pair[0] <= pair[1]) {
             return Err("chunk_sizes must be nonempty and strictly decreasing".into());
         }
@@ -18,12 +19,12 @@ impl HierarchicalChunker {
             .map(
                 |size| Ok(Box::new(FixedSizeChunker::new(size, overlap)?) as Box<dyn TextSplitter>),
             )
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         Self::from_splitters(levels)
     }
 
     /// Compose custom flat splitters, e.g. sections at one level and sentences next.
-    pub fn from_splitters(levels: Vec<Box<dyn TextSplitter>>) -> Result<Self, String> {
+    pub fn from_splitters(levels: Vec<Box<dyn TextSplitter>>) -> Result<Self, Error> {
         if levels.is_empty() {
             return Err("at least one splitter is required".into());
         }
@@ -32,7 +33,7 @@ impl HierarchicalChunker {
 }
 
 impl ChunkingStrategy for HierarchicalChunker {
-    fn chunk(&self, text: &str, document_id: &str) -> Result<Vec<Chunk>, String> {
+    fn chunk(&self, text: &str, document_id: &str) -> Result<Vec<Chunk>, Error> {
         validate_document_id(document_id)?;
         let offsets = boundaries(text);
         let mut chunks: Vec<Chunk> = Vec::new();

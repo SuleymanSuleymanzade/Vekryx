@@ -1,4 +1,5 @@
 use super::*;
+use crate::Error;
 use std::collections::{HashMap, HashSet};
 
 #[test]
@@ -83,7 +84,7 @@ fn hierarchy_validates_sizes_and_supports_custom_splitters() {
     assert!(HierarchicalChunker::from_splitters(vec![]).is_err());
     struct WholeText;
     impl TextSplitter for WholeText {
-        fn split(&self, text: &str) -> Result<Vec<std::ops::Range<usize>>, String> {
+        fn split(&self, text: &str) -> Result<Vec<std::ops::Range<usize>>, Error> {
             Ok(if text.is_empty() {
                 vec![]
             } else {
@@ -101,7 +102,7 @@ fn hierarchy_validates_sizes_and_supports_custom_splitters() {
     assert_eq!(chunks[1].parent_id.as_deref(), Some(chunks[0].id.as_str()));
     struct Invalid;
     impl TextSplitter for Invalid {
-        fn split(&self, _: &str) -> Result<Vec<std::ops::Range<usize>>, String> {
+        fn split(&self, _: &str) -> Result<Vec<std::ops::Range<usize>>, Error> {
             Ok(std::iter::once(0..usize::MAX).collect())
         }
     }

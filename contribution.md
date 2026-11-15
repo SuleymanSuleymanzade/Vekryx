@@ -31,8 +31,9 @@ must continue to build without it.
 | Area | Location / extension point | Expected responsibility |
 | --- | --- | --- |
 | Hybrid retrieval | `src/hybrid.rs` | BM25 and weighted reciprocal rank fusion on the filtered corpus. |
-| Storage and MMR | `src/store.rs` | IDs, validation, ranking, selection, and snapshot API. |
-| Metrics | `src/algorithms/distance.rs`, `DistanceMetric` | Distance and similarity behavior independent of storage. |
+| Storage | `src/store.rs` | IDs, validation, records, and snapshot API. |
+| Search and MMR | `src/search.rs`, `Corpus` | Borrowed filtered retrieval, ranking, and diversification. |
+| Metrics | `src/distance.rs`, `DistanceMetric` | Distance and similarity behavior independent of storage. |
 | Chunking | `src/chunking/`, `TextSplitter` and `ChunkingStrategy` | Flat splitting and hierarchy composition independent of embeddings. |
 | Persistence | `src/state_manager/snapshot.rs` | Atomic snapshot replacement. |
 | Python | `src/python.rs`, `src/chunking/python.rs` | Expose Rust behavior with stable arguments and Python exceptions. |

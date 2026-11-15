@@ -1,4 +1,6 @@
-use crate::distance::{DistanceMetric, Euclidean};
+use crate::distance::DistanceMetric;
+pub use crate::search::Corpus;
+use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -9,6 +11,7 @@ pub struct Record {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "StoreSnapshot")]
 pub struct Vekryx {
     dimensions: usize,
     vectors: BTreeMap<String, Vec<f64>>,
@@ -17,7 +20,7 @@ pub struct Vekryx {
 }
 
 impl Vekryx {
-    pub fn new(dimensions: usize) -> Result<Self, String> {
+    pub fn new(dimensions: usize) -> Result<Self, Error> {
         if dimensions == 0 {
             return Err("dimensions must be greater than zero".into());
         }
@@ -37,21 +40,26 @@ impl Vekryx {
     pub fn is_empty(&self) -> bool {
         self.vectors.is_empty()
     }
-    pub fn get(&self, id: &str) -> Option<&Vec<f64>> {
-        self.vectors.get(id)
+    pub fn get(&self, id: &str) -> Option<&[f64]> {
+        self.vectors.get(id).map(Vec::as_slice)
     }
+    pub(crate) fn vectors(&self) -> impl Iterator<Item = (&String, &Vec<f64>)> {
+        self.vectors.iter()
+    }
+
     pub fn delete(&mut self, id: &str) -> bool {
         self.records.remove(id);
         self.vectors.remove(id).is_some()
     }
 
-    pub(crate) fn validate(&self, vector: &[f64]) -> Result<(), String> {
+    pub(crate) fn validate(&self, vector: &[f64]) -> Result<(), Error> {
         if vector.len() != self.dimensions {
             return Err(format!(
                 "expected {} dimensions, got {}",
                 self.dimensions,
                 vector.len()
-            ));
+            )
+            .into());
         }
         if vector.iter().any(|value| !value.is_finite()) {
             return Err("vector values must be finite".into());
@@ -59,7 +67,7 @@ impl Vekryx {
         Ok(())
     }
 
-    pub fn insert(&mut self, id: String, vector: Vec<f64>) -> Result<(), String> {
+    pub fn insert(&mut self, id: String, vector: Vec<f64>) -> Result<(), Error> {
         if id.is_empty() {
             return Err("id must not be empty".into());
         }
@@ -74,7 +82,7 @@ impl Vekryx {
         id: String,
         vector: Vec<f64>,
         record: Record,
-    ) -> Result<(), String> {
+    ) -> Result<(), Error> {
         self.insert(id.clone(), vector)?;
         self.records.insert(id, record);
         Ok(())
@@ -88,7 +96,7 @@ impl Vekryx {
         self.records.iter()
     }
 
-    /// Materialize the matching corpus before ranking, candidate limits, or MMR.
+    /// Copy matching entries into an independent store. Use `filtered_view` for search.
     /// All filter properties must match; missing properties never match null.
     pub fn filtered(&self, filter: &serde_json::Map<String, serde_json::Value>) -> Self {
         let matches = |id: &String| {
@@ -113,8 +121,21 @@ impl Vekryx {
         }
     }
 
-    pub fn search(&self, query: &[f64], k: usize) -> Result<Vec<(String, f64)>, String> {
-        self.search_with_metric(query, k, &Euclidean)
+    /// Borrow all records without copying vectors or metadata.
+    pub fn view(&self) -> Corpus<'_> {
+        Corpus::new(self, None)
+    }
+
+    /// Borrow a metadata-filtered corpus. Both store and filter must outlive it.
+    pub fn filtered_view<'a>(
+        &'a self,
+        filter: &'a serde_json::Map<String, serde_json::Value>,
+    ) -> Corpus<'a> {
+        Corpus::new(self, Some(filter))
+    }
+
+    pub fn search(&self, query: &[f64], k: usize) -> Result<Vec<(String, f64)>, Error> {
+        self.view().search(query, k)
     }
 
     pub fn search_with_metric(
@@ -122,22 +143,10 @@ impl Vekryx {
         query: &[f64],
         k: usize,
         metric: &dyn DistanceMetric,
-    ) -> Result<Vec<(String, f64)>, String> {
-        self.validate(query)?;
-        // Validate even on an empty store (notably cosine's nonzero constraint).
-        metric.distance(query, query)?;
-        let mut results = self
-            .vectors
-            .iter()
-            .map(|(id, vector)| Ok((id.clone(), metric.distance(query, vector)?)))
-            .collect::<Result<Vec<_>, String>>()?;
-        results.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        results.truncate(k);
-        Ok(results)
+    ) -> Result<Vec<(String, f64)>, Error> {
+        self.view().search_with_metric(query, k, metric)
     }
 
-    /// Greedy MMR reranking of the nearest `fetch_k` candidates.
-    /// Returns original query distances in selection order, not MMR scores.
     pub fn mmr_search(
         &self,
         query: &[f64],
@@ -145,51 +154,9 @@ impl Vekryx {
         fetch_k: usize,
         lambda_mult: f64,
         metric: &dyn DistanceMetric,
-    ) -> Result<Vec<(String, f64)>, String> {
-        if !lambda_mult.is_finite() || !(0.0..=1.0).contains(&lambda_mult) {
-            return Err("lambda_mult must be finite and between 0 and 1".into());
-        }
-        if fetch_k < k {
-            return Err("fetch_k must be greater than or equal to k".into());
-        }
-        let candidates = self.search_with_metric(query, fetch_k, metric)?;
-        if k == 0 || candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-        let vectors: Vec<_> = candidates
-            .iter()
-            .map(|(id, _)| self.vectors[id].as_slice())
-            .collect();
-        let relevance: Vec<_> = vectors
-            .iter()
-            .map(|v| metric.similarity(query, v))
-            .collect::<Result<_, _>>()?;
-        let mut selected = vec![false; candidates.len()];
-        let mut redundancy = vec![f64::NEG_INFINITY; candidates.len()];
-        let mut results = Vec::new();
-        // Seed with the nearest record, including when lambda is zero.
-        let mut best = 0;
-        for _ in 0..k.min(candidates.len()) {
-            selected[best] = true;
-            results.push(candidates[best].clone());
-            let mut next = None;
-            for i in 0..candidates.len() {
-                if selected[i] {
-                    continue;
-                }
-                redundancy[i] = redundancy[i].max(metric.similarity(vectors[i], vectors[best])?);
-                let score = lambda_mult * relevance[i] - (1.0 - lambda_mult) * redundancy[i];
-                // Candidate order gives deterministic distance/ID tie breaking.
-                if next.is_none_or(|(_, best_score)| score > best_score) {
-                    next = Some((i, score));
-                }
-            }
-            match next {
-                Some((i, _)) => best = i,
-                None => break,
-            }
-        }
-        Ok(results)
+    ) -> Result<Vec<(String, f64)>, Error> {
+        self.view()
+            .mmr_search(query, k, fetch_k, lambda_mult, metric)
     }
 
     /// Save a JSON snapshot at the given path; its parent directory must exist.
@@ -197,7 +164,7 @@ impl Vekryx {
         let json = self
             .to_json()
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        crate::snapshot::save(path.as_ref(), json.as_bytes())
+        crate::state_manager::snapshot::save(path.as_ref(), json.as_bytes())
     }
 
     /// Load a snapshot. Invalid contents produce an InvalidData I/O error.
@@ -211,8 +178,29 @@ impl Vekryx {
         serde_json::to_string(self)
     }
 
-    pub fn from_json(json: &str) -> Result<Self, String> {
-        let store: Self = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    pub fn from_json(json: &str) -> Result<Self, Error> {
+        serde_json::from_str(json).map_err(Error::from)
+    }
+}
+
+/// The wire representation is private so every deserializer validates invariants.
+#[derive(Deserialize)]
+struct StoreSnapshot {
+    dimensions: usize,
+    vectors: BTreeMap<String, Vec<f64>>,
+    #[serde(default)]
+    records: BTreeMap<String, Record>,
+}
+
+impl TryFrom<StoreSnapshot> for Vekryx {
+    type Error = Error;
+
+    fn try_from(snapshot: StoreSnapshot) -> Result<Self, Self::Error> {
+        let store = Self {
+            dimensions: snapshot.dimensions,
+            vectors: snapshot.vectors,
+            records: snapshot.records,
+        };
         if store.dimensions == 0 {
             return Err("dimensions must be greater than zero".into());
         }
@@ -221,7 +209,9 @@ impl Vekryx {
             .keys()
             .any(|id| !store.vectors.contains_key(id))
         {
-            return Err("record references a missing vector".into());
+            return Err(Error::InvalidSnapshot(
+                "record references a missing vector".into(),
+            ));
         }
         for (id, vector) in &store.vectors {
             if id.is_empty() {
@@ -236,6 +226,69 @@ impl Vekryx {
 #[cfg(test)]
 mod tests {
     use super::Vekryx;
+    use crate::Error;
+
+    #[test]
+    fn direct_deserialization_rejects_invalid_snapshots() {
+        for json in [
+            r#"{"dimensions":0,"vectors":{}}"#,
+            r#"{"dimensions":2,"vectors":{"a":[1.0]}}"#,
+            r#"{"dimensions":2,"vectors":{" ":[1.0,2.0]},"records":{"missing":{"text":null,"metadata":{}}}}"#,
+            r#"{"dimensions":2,"vectors":{" ":[1.0,2.0],"":[1.0,2.0]}}"#,
+        ] {
+            assert!(serde_json::from_str::<Vekryx>(json).is_err(), "{json}");
+            assert!(Vekryx::from_json(json).is_err(), "{json}");
+        }
+        let json = r#"{"dimensions":2,"vectors":{"a":[1.0,2.0]}}"#;
+        let restored: Vekryx = serde_json::from_str(json).unwrap();
+        assert_eq!(restored.get("a"), Some([1.0, 2.0].as_slice()));
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::from_str::<serde_json::Value>(json).unwrap()
+        );
+    }
+
+    #[test]
+    fn filtered_views_borrow_records_and_match_owned_search() {
+        use super::Record;
+        use crate::distance::Cosine;
+        let mut store = Vekryx::new(2).unwrap();
+        store
+            .insert_record(
+                "a".into(),
+                vec![1.0, 0.0],
+                Record {
+                    text: Some("cats".into()),
+                    metadata: serde_json::from_value(serde_json::json!({"group": "public"}))
+                        .unwrap(),
+                },
+            )
+            .unwrap();
+        store.insert("b".into(), vec![0.0, 1.0]).unwrap();
+        let filter = serde_json::from_value(serde_json::json!({"group": "public"})).unwrap();
+        let view = store.filtered_view(&filter);
+        assert_eq!(view.len(), 1);
+        assert!(std::ptr::eq(
+            view.records().next().unwrap().1,
+            store.record("a").unwrap()
+        ));
+        let owned = store.filtered(&filter);
+        assert_eq!(
+            view.search(&[1.0, 0.0], 2).unwrap(),
+            owned.search(&[1.0, 0.0], 2).unwrap()
+        );
+        assert_eq!(
+            view.mmr_search(&[1.0, 0.0], 1, 2, 0.5, &Cosine).unwrap(),
+            owned.mmr_search(&[1.0, 0.0], 1, 2, 0.5, &Cosine).unwrap()
+        );
+        assert_eq!(
+            view.hybrid_search("cats", &[1.0, 0.0], 2, &Cosine, 0.5, 60)
+                .unwrap(),
+            owned
+                .hybrid_search("cats", &[1.0, 0.0], 2, &Cosine, 0.5, 60)
+                .unwrap()
+        );
+    }
 
     #[test]
     fn disk_snapshots_replace_round_trip_and_report_invalid_data() {
@@ -351,7 +404,7 @@ mod tests {
         use crate::distance::DistanceMetric;
         struct Manhattan;
         impl DistanceMetric for Manhattan {
-            fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, String> {
+            fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, Error> {
                 Ok(left.iter().zip(right).map(|(a, b)| (a - b).abs()).sum())
             }
         }

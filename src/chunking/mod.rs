@@ -1,4 +1,5 @@
 //! Text splitting is independent of embeddings, vector storage, and retrieval.
+use crate::Error;
 mod fixed_size;
 mod hierarchical;
 #[cfg(feature = "python")]
@@ -23,12 +24,12 @@ pub struct Chunk {
 /// A replaceable, flat splitter. Return nonempty character ranges within text.
 /// Preserve document order; offsets count Unicode scalar values, not UTF-8 bytes.
 pub trait TextSplitter: Send + Sync {
-    fn split(&self, text: &str) -> Result<Vec<Range<usize>>, String>;
+    fn split(&self, text: &str) -> Result<Vec<Range<usize>>, Error>;
 }
 
 /// Produces document-scoped records, independently of how embeddings are made.
 pub trait ChunkingStrategy: Send + Sync {
-    fn chunk(&self, text: &str, document_id: &str) -> Result<Vec<Chunk>, String>;
+    fn chunk(&self, text: &str, document_id: &str) -> Result<Vec<Chunk>, Error>;
 }
 
 pub(crate) fn boundaries(text: &str) -> Vec<usize> {
@@ -38,14 +39,14 @@ pub(crate) fn boundaries(text: &str) -> Vec<usize> {
         .collect()
 }
 
-pub(crate) fn validate_document_id(document_id: &str) -> Result<(), String> {
+pub(crate) fn validate_document_id(document_id: &str) -> Result<(), Error> {
     if document_id.is_empty() {
         return Err("document_id must not be empty".into());
     }
     Ok(())
 }
 
-pub(crate) fn validate_range(range: &Range<usize>, length: usize) -> Result<(), String> {
+pub(crate) fn validate_range(range: &Range<usize>, length: usize) -> Result<(), Error> {
     if range.start >= range.end || range.end > length {
         return Err("splitter returned an empty or out-of-bounds character range".into());
     }

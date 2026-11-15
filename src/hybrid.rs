@@ -1,5 +1,9 @@
 //! Exact BM25 and vector retrieval combined with weighted reciprocal rank fusion.
-use crate::{distance::DistanceMetric, store::Vekryx};
+use crate::Error;
+use crate::{
+    distance::DistanceMetric,
+    store::{Corpus, Vekryx},
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn tokens(text: &str) -> Vec<String> {
@@ -10,6 +14,22 @@ fn tokens(text: &str) -> Vec<String> {
 }
 
 impl Vekryx {
+    /// Combine vector and keyword rankings across the complete store.
+    pub fn hybrid_search(
+        &self,
+        text: &str,
+        query: &[f64],
+        k: usize,
+        metric: &dyn DistanceMetric,
+        vector_weight: f64,
+        rrf_k: usize,
+    ) -> Result<Vec<(String, f64)>, Error> {
+        self.view()
+            .hybrid_search(text, query, k, metric, vector_weight, rrf_k)
+    }
+}
+
+impl Corpus<'_> {
     /// Search this corpus (call `filtered` first for metadata restrictions).
     /// Larger scores are better. BM25 uses k1=1.2, b=0.75 and positive IDF.
     pub fn hybrid_search(
@@ -20,7 +40,7 @@ impl Vekryx {
         metric: &dyn DistanceMetric,
         vector_weight: f64,
         rrf_k: usize,
-    ) -> Result<Vec<(String, f64)>, String> {
+    ) -> Result<Vec<(String, f64)>, Error> {
         if !vector_weight.is_finite() || !(0.0..=1.0).contains(&vector_weight) {
             return Err("vector_weight must be finite and between 0 and 1".into());
         }
@@ -119,7 +139,8 @@ mod tests {
         let mut store = Vekryx::new(2).unwrap();
         insert(&mut store, "outside", vec![0.0, 0.0], "cat", "private");
         insert(&mut store, "inside", vec![0.0, 1.0], "dog", "public");
-        let filtered = store.filtered(json!({"group":"public"}).as_object().unwrap());
+        let filter = json!({"group":"public"});
+        let filtered = store.filtered_view(filter.as_object().unwrap());
         assert_eq!(
             filtered
                 .search_with_metric(&[1.0, 0.0], 1, &Cosine)
