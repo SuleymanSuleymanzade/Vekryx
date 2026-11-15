@@ -1,4 +1,5 @@
 use super::{boundaries, chunk_id, validate_document_id, Chunk, ChunkingStrategy, TextSplitter};
+use crate::Error;
 use std::ops::Range;
 
 #[derive(Debug, Clone, Copy)]
@@ -8,7 +9,7 @@ pub struct FixedSizeChunker {
 }
 
 impl FixedSizeChunker {
-    pub fn new(chunk_size: usize, overlap: usize) -> Result<Self, String> {
+    pub fn new(chunk_size: usize, overlap: usize) -> Result<Self, Error> {
         if chunk_size == 0 || overlap >= chunk_size {
             return Err(
                 "chunk_size must be positive and overlap must be smaller than chunk_size".into(),
@@ -22,7 +23,7 @@ impl FixedSizeChunker {
 }
 
 impl TextSplitter for FixedSizeChunker {
-    fn split(&self, text: &str) -> Result<Vec<Range<usize>>, String> {
+    fn split(&self, text: &str) -> Result<Vec<Range<usize>>, Error> {
         let length = text.chars().count();
         let mut ranges = Vec::new();
         let mut start = 0;
@@ -39,7 +40,7 @@ impl TextSplitter for FixedSizeChunker {
 }
 
 impl ChunkingStrategy for FixedSizeChunker {
-    fn chunk(&self, text: &str, document_id: &str) -> Result<Vec<Chunk>, String> {
+    fn chunk(&self, text: &str, document_id: &str) -> Result<Vec<Chunk>, Error> {
         validate_document_id(document_id)?;
         let offsets = boundaries(text);
         Ok(self

@@ -1,10 +1,9 @@
 use crate::{
     chunking, distance,
-    store::{Record, Vekryx},
+    store::{Corpus, Record, Vekryx},
 };
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use std::borrow::Cow;
 use std::path::PathBuf;
 
 /// An in-memory vector store with configurable exact search and JSON snapshots.
@@ -13,15 +12,24 @@ struct PyVekryx {
     store: Vekryx,
 }
 
+fn parse_filter(
+    json: Option<&str>,
+) -> PyResult<Option<serde_json::Map<String, serde_json::Value>>> {
+    json.map(|json| {
+        serde_json::from_str(json)
+            .map_err(|error| PyValueError::new_err(format!("invalid filter: {error}")))
+    })
+    .transpose()
+}
+
 impl PyVekryx {
-    fn corpus(&self, filter_json: Option<&str>) -> PyResult<Cow<'_, Vekryx>> {
-        match filter_json {
-            None => Ok(Cow::Borrowed(&self.store)),
-            Some(json) => {
-                let filter = serde_json::from_str(json)
-                    .map_err(|e| PyValueError::new_err(format!("invalid filter: {e}")))?;
-                Ok(Cow::Owned(self.store.filtered(&filter)))
-            }
+    fn corpus<'a>(
+        &'a self,
+        filter: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    ) -> Corpus<'a> {
+        match filter {
+            None => self.store.view(),
+            Some(filter) => self.store.filtered_view(filter),
         }
     }
 }
@@ -31,7 +39,8 @@ impl PyVekryx {
     #[new]
     fn new(dimensions: usize) -> PyResult<Self> {
         Ok(Self {
-            store: Vekryx::new(dimensions).map_err(PyValueError::new_err)?,
+            store: Vekryx::new(dimensions)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
         })
     }
 
@@ -46,7 +55,9 @@ impl PyVekryx {
 
     /// Insert a vector, replacing the existing vector when the ID already exists.
     fn insert(&mut self, id: String, vector: Vec<f64>) -> PyResult<()> {
-        self.store.insert(id, vector).map_err(PyValueError::new_err)
+        self.store
+            .insert(id, vector)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     #[pyo3(signature = (id, vector, text, metadata_json))]
@@ -61,7 +72,7 @@ impl PyVekryx {
             .map_err(|e| PyValueError::new_err(format!("invalid metadata: {e}")))?;
         self.store
             .insert_record(id, vector, Record { text, metadata })
-            .map_err(PyValueError::new_err)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     fn record_json(&self, id: &str) -> PyResult<String> {
@@ -78,7 +89,7 @@ impl PyVekryx {
     fn get(&self, id: &str) -> PyResult<Vec<f64>> {
         self.store
             .get(id)
-            .cloned()
+            .map(<[f64]>::to_vec)
             .ok_or_else(|| PyKeyError::new_err(id.to_owned()))
     }
 
@@ -95,10 +106,12 @@ impl PyVekryx {
         metric: &str,
         filter_json: Option<&str>,
     ) -> PyResult<Vec<(String, f64)>> {
-        let metric = distance::named_metric(metric).map_err(PyValueError::new_err)?;
-        self.corpus(filter_json)?
+        let metric = distance::named_metric(metric)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let filter = parse_filter(filter_json)?;
+        self.corpus(filter.as_ref())
             .search_with_metric(&query, k, metric.as_ref())
-            .map_err(PyValueError::new_err)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Select relevant, diverse candidates; return query distances in MMR order.
@@ -112,10 +125,12 @@ impl PyVekryx {
         metric: &str,
         filter_json: Option<&str>,
     ) -> PyResult<Vec<(String, f64)>> {
-        let metric = distance::named_metric(metric).map_err(PyValueError::new_err)?;
-        self.corpus(filter_json)?
+        let metric = distance::named_metric(metric)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let filter = parse_filter(filter_json)?;
+        self.corpus(filter.as_ref())
             .mmr_search(&query, k, fetch_k, lambda_mult, metric.as_ref())
-            .map_err(PyValueError::new_err)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     #[pyo3(signature = (text, query, k=5, *, metric="cosine", vector_weight=0.5, rrf_k=60, filter_json=None))]
@@ -130,10 +145,12 @@ impl PyVekryx {
         rrf_k: usize,
         filter_json: Option<&str>,
     ) -> PyResult<Vec<(String, f64)>> {
-        let metric = distance::named_metric(metric).map_err(PyValueError::new_err)?;
-        self.corpus(filter_json)?
+        let metric = distance::named_metric(metric)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let filter = parse_filter(filter_json)?;
+        self.corpus(filter.as_ref())
             .hybrid_search(text, &query, k, metric.as_ref(), vector_weight, rrf_k)
-            .map_err(PyValueError::new_err)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Atomically replace a JSON snapshot on the same filesystem.

@@ -1,11 +1,17 @@
+//! Exact vector storage, configurable metrics, text chunking, and JSON snapshots.
 pub mod chunking;
-#[path = "algorithms/distance.rs"]
 pub mod distance;
+pub mod error;
+pub use error::Error;
 mod hybrid;
-#[path = "state_manager/snapshot.rs"]
-mod snapshot;
+pub mod search;
+mod state_manager;
 pub mod store;
 pub use store::Vekryx;
+
+/// Older, fixed-dimension search experiments, separate from the supported store.
+#[cfg(feature = "experimental")]
+pub mod experimental;
 
 #[cfg(feature = "python")]
 mod python;

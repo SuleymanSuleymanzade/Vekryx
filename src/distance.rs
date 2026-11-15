@@ -1,17 +1,18 @@
 //! Extensible vector metrics. Implement `DistanceMetric` to add a metric without
 //! changing storage or ranking. Distances must be finite and nonnegative; similarity is finite and larger
 //! for more related vectors and should have a comparable scale across pairs.
+use crate::Error;
 
 pub trait DistanceMetric: Send + Sync {
-    fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, String>;
+    fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, Error>;
 
     /// Similarity used by MMR. Override when the metric has a natural similarity.
-    fn similarity(&self, left: &[f64], right: &[f64]) -> Result<f64, String> {
+    fn similarity(&self, left: &[f64], right: &[f64]) -> Result<f64, Error> {
         Ok(1.0 / (1.0 + self.distance(left, right)?))
     }
 }
 
-fn validate_pair(left: &[f64], right: &[f64]) -> Result<(), String> {
+fn validate_pair(left: &[f64], right: &[f64]) -> Result<(), Error> {
     if left.is_empty() || left.len() != right.len() {
         return Err("vectors must have the same positive dimension".into());
     }
@@ -25,7 +26,7 @@ fn validate_pair(left: &[f64], right: &[f64]) -> Result<(), String> {
 pub struct Euclidean;
 
 impl DistanceMetric for Euclidean {
-    fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, String> {
+    fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, Error> {
         validate_pair(left, right)?;
         let distance = left
             .iter()
@@ -42,11 +43,11 @@ impl DistanceMetric for Euclidean {
 pub struct Cosine;
 
 impl DistanceMetric for Cosine {
-    fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, String> {
+    fn distance(&self, left: &[f64], right: &[f64]) -> Result<f64, Error> {
         Ok(1.0 - self.similarity(left, right)?)
     }
 
-    fn similarity(&self, left: &[f64], right: &[f64]) -> Result<f64, String> {
+    fn similarity(&self, left: &[f64], right: &[f64]) -> Result<f64, Error> {
         validate_pair(left, right)?;
         // Scale before computing norms to handle both huge and subnormal values.
         let left_scale = left.iter().fold(0.0_f64, |s, x| s.max(x.abs()));
@@ -74,13 +75,11 @@ impl DistanceMetric for Cosine {
 }
 
 /// Python's named metric registry. Rust callers can supply any implementation.
-pub fn named_metric(name: &str) -> Result<Box<dyn DistanceMetric>, String> {
+pub fn named_metric(name: &str) -> Result<Box<dyn DistanceMetric>, Error> {
     match name {
         "euclidean" => Ok(Box::new(Euclidean)),
         "cosine" => Ok(Box::new(Cosine)),
-        _ => Err(format!(
-            "unknown metric {name:?}; expected 'euclidean' or 'cosine'"
-        )),
+        _ => Err(format!("unknown metric {name:?}; expected 'euclidean' or 'cosine'").into()),
     }
 }
 

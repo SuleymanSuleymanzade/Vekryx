@@ -1,4 +1,9 @@
 /target
 .venv/
 __pycache__/
-data/
+/data/
+*.py[cod]
+.pytest_cache/
+/build/
+/dist/
+*.egg-info/

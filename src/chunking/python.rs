@@ -30,7 +30,7 @@ impl From<Chunk> for PyChunk {
 fn chunk(strategy: &dyn ChunkingStrategy, text: &str, document_id: &str) -> PyResult<Vec<PyChunk>> {
     Ok(strategy
         .chunk(text, document_id)
-        .map_err(PyValueError::new_err)?
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
         .into_iter()
         .map(Into::into)
         .collect())
@@ -47,7 +47,8 @@ impl PyFixedSizeChunker {
     #[pyo3(signature = (chunk_size=512, overlap=0))]
     fn new(chunk_size: usize, overlap: usize) -> PyResult<Self> {
         Ok(Self {
-            strategy: FixedSizeChunker::new(chunk_size, overlap).map_err(PyValueError::new_err)?,
+            strategy: FixedSizeChunker::new(chunk_size, overlap)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
         })
     }
 
@@ -72,7 +73,7 @@ impl PyHierarchicalChunker {
                 chunk_sizes.unwrap_or_else(|| vec![1024, 256]),
                 overlap,
             )
-            .map_err(PyValueError::new_err)?,
+            .map_err(|error| PyValueError::new_err(error.to_string()))?,
         })
     }
 
