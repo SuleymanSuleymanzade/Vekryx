@@ -234,13 +234,17 @@ class Vekryx:
             hybrid.keyword_candidates, metric=metric, filter_json=filter_json)
         return [FusionHit(id, score) for id, score in rows]
 
-    def save(self, path):
+    def save(self, path, *, format="json"):
         """Save vectors, text, metadata, and dimensions; model configuration is not serialized."""
-        self._store.save(path)
+        self._store.save(path, format=format)
+
+    def save_mapped(self, path):
+        """Export a read-only snapshot for Rust's MappedVekryx reader."""
+        self._store.save_mapped(path)
 
     @classmethod
-    def load(cls, path, *, embedding_model=None):
-        store = _VectorStore.load(path)
+    def load(cls, path, *, embedding_model=None, format="json"):
+        store = _VectorStore.load(path, format=format)
         if embedding_model is None:
             instance = cls(store.dimensions)
         else:

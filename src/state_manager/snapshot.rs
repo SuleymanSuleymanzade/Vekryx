@@ -1,9 +1,12 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub fn save(path: &Path, contents: &[u8]) -> io::Result<()> {
+pub fn write_atomic(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()
@@ -26,7 +29,7 @@ pub fn save(path: &Path, contents: &[u8]) -> io::Result<()> {
         }
     };
     let result = (|| {
-        file.write_all(contents)?;
+        write(&mut file)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
         Ok(())
@@ -35,4 +38,16 @@ pub fn save(path: &Path, contents: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+#[cfg(feature = "experimental")]
+pub fn save(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    write_atomic(path, |file| file.write_all(contents))
+}
+
+pub(crate) fn invalid_data(
+    error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
 }

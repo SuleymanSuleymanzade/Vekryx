@@ -120,6 +120,19 @@ class RecordTests(unittest.TestCase):
             restored = Vekryx.load(path, embedding_model=Model())
             self.assertEqual(restored.get_record(id), store.get_record(id))
             self.assertEqual(restored.hybrid_search("cat", where={"domain": "pets"})[0][0], id)
+            compressed = Path(directory) / "store.json.gz"
+            store.save(compressed, format="compressed_json")
+            restored = Vekryx.load(compressed, embedding_model=Model(), format="compressed_json")
+            self.assertEqual(restored.get_record(id), store.get_record(id))
+            compressed.write_bytes(compressed.read_bytes()[:-1])
+            with self.assertRaises(ValueError):
+                Vekryx.load(compressed, format="compressed_json")
+            with self.assertRaises(ValueError):
+                store.save(compressed, format="unknown")
+            mapped = Path(directory) / "store.vmap"
+            store.save_mapped(mapped)
+            with mapped.open("rb") as file:
+                self.assertEqual(file.read(8), b"VEKMAP01")
             path.write_text(json.dumps({"dimensions": 2, "vectors": {"old": [1, 0]}}))
             legacy = Vekryx.load(path)
             self.assertEqual(legacy.get_record("old"), {"id": "old", "vector": [1, 0], "text": None, "metadata": {}})

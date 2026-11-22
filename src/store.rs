@@ -1,8 +1,21 @@
 use crate::distance::DistanceMetric;
 pub use crate::search::Corpus;
+use crate::state_manager::snapshot::{invalid_data, write_atomic};
 use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{self, BufReader, BufWriter, Write};
+use std::path::Path;
+
+/// Encoding for snapshots that load into a mutable in-memory store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SnapshotFormat {
+    #[default]
+    Json,
+    /// The same JSON document wrapped in gzip.
+    CompressedJson,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -53,18 +66,7 @@ impl Vekryx {
     }
 
     pub(crate) fn validate(&self, vector: &[f64]) -> Result<(), Error> {
-        if vector.len() != self.dimensions {
-            return Err(format!(
-                "expected {} dimensions, got {}",
-                self.dimensions,
-                vector.len()
-            )
-            .into());
-        }
-        if vector.iter().any(|value| !value.is_finite()) {
-            return Err("vector values must be finite".into());
-        }
-        Ok(())
+        validate_vector(self.dimensions, vector)
     }
 
     pub fn insert(&mut self, id: String, vector: Vec<f64>) -> Result<(), Error> {
@@ -181,18 +183,49 @@ impl Vekryx {
     }
 
     /// Save a JSON snapshot at the given path; its parent directory must exist.
-    pub fn save(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
-        let json = self
-            .to_json()
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        crate::state_manager::snapshot::save(path.as_ref(), json.as_bytes())
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        self.save_with_format(path, SnapshotFormat::Json)
     }
 
     /// Load a snapshot. Invalid contents produce an InvalidData I/O error.
-    pub fn load(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        Self::from_json(&json)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::load_with_format(path, SnapshotFormat::Json)
+    }
+
+    /// Atomically replace a snapshot using the selected encoding.
+    pub fn save_with_format(
+        &self,
+        path: impl AsRef<Path>,
+        format: SnapshotFormat,
+    ) -> io::Result<()> {
+        write_atomic(path.as_ref(), |file| {
+            let mut writer = BufWriter::new(file);
+            match format {
+                SnapshotFormat::Json => serde_json::to_writer(&mut writer, self)?,
+                SnapshotFormat::CompressedJson => {
+                    let mut encoder =
+                        flate2::write::GzEncoder::new(&mut writer, Default::default());
+                    serde_json::to_writer(&mut encoder, self)?;
+                    encoder.finish()?;
+                }
+            }
+            writer.flush()
+        })
+    }
+
+    /// Load a snapshot using the selected encoding and validate its contents.
+    pub fn load_with_format(path: impl AsRef<Path>, format: SnapshotFormat) -> io::Result<Self> {
+        match format {
+            SnapshotFormat::Json => {
+                let json = std::fs::read_to_string(path)?;
+                Self::from_json(&json).map_err(invalid_data)
+            }
+            SnapshotFormat::CompressedJson => {
+                let reader = BufReader::new(File::open(path)?);
+                serde_json::from_reader(flate2::bufread::MultiGzDecoder::new(reader))
+                    .map_err(invalid_data)
+            }
+        }
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -202,6 +235,16 @@ impl Vekryx {
     pub fn from_json(json: &str) -> Result<Self, Error> {
         serde_json::from_str(json).map_err(Error::from)
     }
+}
+
+pub(crate) fn validate_vector(dimensions: usize, vector: &[f64]) -> Result<(), Error> {
+    if vector.len() != dimensions {
+        return Err(format!("expected {dimensions} dimensions, got {}", vector.len()).into());
+    }
+    if vector.iter().any(|value| !value.is_finite()) {
+        return Err("vector values must be finite".into());
+    }
+    Ok(())
 }
 
 /// The wire representation is private so every deserializer validates invariants.
@@ -348,6 +391,21 @@ mod tests {
             ErrorKind::NotFound
         );
         assert!(store.save(directory.join("absent/vectors.json")).is_err());
+        let gzip = directory.join("vectors.json.gz");
+        let format = super::SnapshotFormat::CompressedJson;
+        store.save_with_format(&gzip, format).unwrap();
+        let mut compressed = fs::read(&gzip).unwrap();
+        assert!(compressed.starts_with(&[0x1f, 0x8b]));
+        assert_eq!(
+            Vekryx::load_with_format(&gzip, format).unwrap().get("item"),
+            store.get("item")
+        );
+        compressed.pop();
+        fs::write(&gzip, compressed).unwrap();
+        assert_eq!(
+            Vekryx::load_with_format(&gzip, format).unwrap_err().kind(),
+            ErrorKind::InvalidData
+        );
         fs::remove_dir_all(&directory).unwrap();
     }
 

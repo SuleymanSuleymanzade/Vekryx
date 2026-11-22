@@ -123,26 +123,34 @@ impl CandidateIndex for ExactSearch {
         limit: usize,
         _options: &(),
     ) -> Result<Vec<Candidate>, Error> {
-        let mut candidates = corpus
-            .vectors()
-            .map(|(id, vector)| {
-                let distance = metric.distance(query, vector)?;
-                validate_distance(distance)?;
-                Ok(Candidate {
-                    id: id.to_owned(),
-                    distance,
-                    distance_kind: DistanceKind::Exact,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        candidates.sort_by(|a, b| {
-            a.distance
-                .total_cmp(&b.distance)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        candidates.truncate(limit);
-        Ok(candidates)
+        exact_candidates(corpus.vectors().map(Ok), query, metric, limit)
     }
+}
+
+pub(crate) fn exact_candidates<'a>(
+    vectors: impl Iterator<Item = Result<(&'a str, &'a [f64]), Error>>,
+    query: &[f64],
+    metric: &dyn DistanceMetric,
+    limit: usize,
+) -> Result<Vec<Candidate>, Error> {
+    let mut candidates = vectors
+        .map(|entry| {
+            let (id, vector) = entry?;
+            let distance = metric.distance(query, vector)?;
+            validate_distance(distance)?;
+            Ok((id, distance))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(b.0)));
+    candidates.truncate(limit);
+    Ok(candidates
+        .into_iter()
+        .map(|(id, distance)| Candidate {
+            id: id.to_owned(),
+            distance,
+            distance_kind: DistanceKind::Exact,
+        })
+        .collect())
 }
 
 /// Immutable index bound to one corpus and metric; not part of JSON snapshots.
