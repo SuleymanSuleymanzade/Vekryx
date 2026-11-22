@@ -1,0 +1,12 @@
+**/.git
+**/.agents
+**/.aws
+**/.codex
+**/.venv
+**/target
+**/node_modules
+**/dist
+**/__pycache__
+**/.env*
+/data
+/server/data

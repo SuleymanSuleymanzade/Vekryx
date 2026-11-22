@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    environment:
+      VEKRYX_OLLAMA_URL: http://ollama:11434
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - collections:/var/lib/vekryx
+    depends_on:
+      - ollama
+
+  ui:
+    build:
+      context: .
+      dockerfile: UI/Dockerfile
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      - api
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - models:/root/.ollama
+
+volumes:
+  collections:
+  models:

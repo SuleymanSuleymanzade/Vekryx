@@ -4,6 +4,9 @@ The local frontend uses React, TypeScript, Vite, and shadcn/ui components. It
 connects to the Actix server for collections, document ingestion, and ranked
 text search.
 
+To run the UI with the API and Ollama, see the
+[Docker Compose instructions](../README.md#docker).
+
 Start the [Actix server](../server/README.md) and Ollama, then run these commands
 from the repository root.
 
