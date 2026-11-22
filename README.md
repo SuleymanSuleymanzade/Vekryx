@@ -20,6 +20,7 @@
 
 <p align="center">
   <a href="#installation">Install</a> ·
+  <a href="#docker">Docker</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#repository-structure">File structure</a> ·
@@ -68,6 +69,26 @@ The Rust core uses ownership and typed interfaces to separate storage from
 search behavior. Python bindings call the same implementation through PyO3.
 
 ## Installation
+
+### Docker
+
+Use Docker with the Compose plugin to run the HTTP API, browser UI, and Ollama.
+From the repository root, start the stack and download the embedding model:
+
+```bash
+docker compose up --build -d
+docker compose exec ollama ollama pull embeddinggemma
+curl --fail http://127.0.0.1:8080/healthz
+```
+
+Open <http://127.0.0.1:5173>, create a collection with the
+`embeddinggemma` model, then add and search documents. The API is also
+available at <http://127.0.0.1:8080>. Both ports are bound to localhost.
+See the [HTTP API examples](server/README.md#create-ingest-and-search).
+
+Use `docker compose logs -f` to follow logs and `docker compose down` to stop
+the stack. Compose keeps collection snapshots and downloaded models in named
+volumes across restarts and `docker compose down`.
 
 ### Rust
 

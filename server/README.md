@@ -1,5 +1,8 @@
 # Vekryx HTTP server
 
+To run the API with the browser UI and Ollama, see the
+[Docker Compose instructions](../README.md#docker).
+
 Run these commands from the repository root. Start Ollama and pull an embedding
 model, then start the standalone Actix server. The server uses Vekryx for
 storage and search and Ollama for embeddings.
