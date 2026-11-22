@@ -46,6 +46,10 @@ The Rust crate and Python package are named `vekryx`; the public store type is
 and rebuild the extension. Existing vector-only JSON snapshots remain readable; new snapshots also retain
 original text and metadata when supplied.
 
+The standalone [Actix HTTP server](server/README.md) ingests documents, embeds
+their chunks through Ollama, and returns ranked chunks for plain-text queries.
+The [React frontend](UI/README.md) provides a browser workspace for the same API.
+
 ## Features
 
 - **Record storage:** optional UUIDs in Python, original text, JSON metadata, and finite `f64` vectors.
