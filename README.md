@@ -55,7 +55,7 @@ original text and metadata when supplied.
 - **Approximate retrieval:** seeded HNSW graphs, trained IVF lists, product quantization, and residual IVF-PQ.
 - **Diverse results:** MMR selection over a configurable nearest-candidate pool.
 - **Text preparation:** fixed-size, overlapping, and hierarchical parent–child chunks.
-- **Explicit persistence:** interoperable JSON snapshots for Rust and Python.
+- **Explicit persistence:** plain and gzip-compressed JSON in Rust and Python, plus read-only memory-mapped vector search in Rust.
 - **Composable retrieval:** index builders, typed backend query options, and shared vector/MMR/hybrid pipelines.
 - **Explicit result semantics:** named distances with precision tags, separate hybrid fusion scores.
 - **Trait-based extension:** independent metrics, candidate indexes, flat splitters, and chunking strategies.
@@ -226,7 +226,7 @@ match the configured positive dimension and contain only finite numbers.
 flowchart TD
     D[Documents] --> C[Optional chunking and embedding adapters]
     C --> S[(Vekryx: stable IDs, vectors, text, metadata)]
-    S <--> P[Atomic JSON snapshots: canonical data only]
+    S <--> P[Atomic snapshots: JSON, gzip, or mapped vectors]
     S --> F[Corpus: optional metadata filter]
     F --> B[IndexBuilder: construction and training settings]
     B --> I[SearchSession: fixed corpus, metric, backend]
@@ -261,7 +261,8 @@ or use the shared exact reranker.
 - [Hybrid ranking](src/hybrid.rs) combines a bounded vector ranking with BM25 using weighted RRF.
 - [DistanceMetric](src/distance.rs) supplies distances, MMR similarities, and optional built-in geometry identification for specialized builders.
 - [TextSplitter and ChunkingStrategy](src/chunking/mod.rs) separate flat splitting from hierarchy construction.
-- [Snapshot writer](src/state_manager/snapshot.rs) atomically replaces JSON files on the same filesystem.
+- [Snapshot writer](src/state_manager/snapshot.rs) atomically replaces snapshot files on the same filesystem.
+- [Mapped snapshots](src/state_manager/mapped.rs) keep vector values file-backed for read-only exact search.
 - [Python bindings](src/python.rs) adapt the shared pipelines; [Python options](python/vekryx/search.py) expose immutable options and named results.
 
 Filtering precedes candidate limits and BM25 statistics. Backends must respect the
@@ -320,6 +321,7 @@ Vekryx/
 │   │   └── tests.rs             # Unicode, overlap, hierarchy contracts
 │   ├── state_manager.rs         # Private persistence module declaration
 │   ├── state_manager/
+│   │   ├── mapped.rs           # Binary snapshots and file-backed exact search
 │   │   └── snapshot.rs          # Temporary-file write and atomic replacement
 │   └── experimental/            # Optional: --features experimental
 │       ├── mod.rs
@@ -504,7 +506,7 @@ adapters are supported through structural typing.
 | Inject metrics through a trait | Strategy pattern and dependency inversion | Retrieval depends on the metric interface; adding a Rust metric does not change storage. Trait objects allow runtime selection. |
 | Compose hierarchy from flat splitters | Composition over inheritance | Each level can use a different `TextSplitter`; the hierarchy owns parent/child construction and offset translation. |
 | Keep Python orchestration outside Rust search | Facade and adapter patterns | Python handles embedding providers and convenient inputs; PyO3 converts arguments and errors; Rust owns validation and ranking. |
-| Use explicit JSON snapshots | Separate persistence responsibility | In-memory storage does not assume a filesystem path. Saving writes a temporary file and renames it; parent directories must exist and writers are not coordinated. |
+| Use explicit snapshots | Separate persistence responsibility | In-memory storage does not assume a filesystem path. Saving writes a temporary file and renames it; parent directories must exist and writers are not coordinated. |
 | Use a shared typed `Error` | Explicit failure contract | Callers can distinguish invalid arguments, invalid snapshot references, and JSON errors. Filesystem APIs return `io::Result`; Python maps invalid input to `ValueError`, missing IDs to `KeyError`, and I/O errors to `OSError`. |
 | Gate legacy indexes with `experimental` | Separate experimental subsystem | Default builds do not need `ndarray` or `rand`. These indexes do not accelerate the supported exact store. |
 | Keep model objects outside snapshots | Application-owned dependency | Rust and Python exchange the same vectors and records. Python must reattach the same embedding model/configuration for text queries after loading. |
@@ -1210,6 +1212,54 @@ with TemporaryDirectory() as directory:
 Either language can load the other's supported snapshot. Loading a Python text
 store with `embedding_model=` reattaches the adapter; loading it without one
 still permits numeric-vector searches.
+
+#### Compressed JSON
+
+| Format | Rust | Python |
+| --- | --- | --- |
+| Plain JSON | `save` / `load` | `save` / `load` |
+| Gzip JSON | `save_with_format` / `load_with_format` with `SnapshotFormat::CompressedJson` | `save` / `load` with `format="compressed_json"` |
+| Memory-mapped | `save_mapped` / `MappedVekryx::open` | Export with `save_mapped` |
+
+Gzip snapshots store the same JSON document and load into a mutable store. Select
+the format explicitly when saving and loading.
+
+```rust
+use vekryx::{SnapshotFormat, Vekryx};
+
+let store = Vekryx::new(2)?;
+let format = SnapshotFormat::CompressedJson;
+store.save_with_format("store.json.gz", format)?;
+let restored = Vekryx::load_with_format("store.json.gz", format)?;
+```
+
+```python
+store.save("store.json.gz", format="compressed_json")
+restored = Vekryx.load("store.json.gz", format="compressed_json")
+```
+
+#### Memory-mapped vectors
+
+Rust and Python can export a versioned binary snapshot with `save_mapped(path)`.
+Rust's `MappedVekryx` opens that file read-only on little-endian hosts. It keeps
+IDs and records in memory and borrows vector values from the mapped file. Exact
+search scans the mapped vectors and can page them in as needed.
+
+```rust
+use vekryx::{MappedVekryx, Vekryx};
+
+let mut store = Vekryx::new(2)?;
+store.insert("a".into(), vec![1.0, 0.0])?;
+store.save_mapped("store.vmap")?;
+
+// SAFETY: This example owns the file and keeps it immutable while mapped.
+let mapped = unsafe { MappedVekryx::open("store.vmap")? };
+assert_eq!(mapped.search(&[1.0, 0.0], 1)?, vec![("a".into(), 0.0)]);
+```
+
+Keep the underlying file immutable for the lifetime of every open mapping.
+Publish updates by saving a new snapshot with `save_mapped`, which writes a
+temporary file and replaces the destination entry on success.
 
 ### Extending Through Interfaces
 

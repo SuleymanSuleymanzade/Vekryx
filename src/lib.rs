@@ -10,7 +10,8 @@ pub use hybrid::{FusionHit, HybridOptions};
 pub use search::{MmrOptions, SearchHit, SearchOptions};
 mod state_manager;
 pub mod store;
-pub use store::Vekryx;
+pub use state_manager::mapped::MappedVekryx;
+pub use store::{SnapshotFormat, Vekryx};
 
 /// Older, fixed-dimension search experiments, separate from the supported store.
 #[cfg(feature = "experimental")]

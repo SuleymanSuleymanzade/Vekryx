@@ -2,7 +2,7 @@ use crate::{
     chunking, distance,
     index::DistanceKind,
     store::{Corpus, Record, Vekryx},
-    HybridOptions, MmrOptions, SearchHit, SearchOptions,
+    HybridOptions, MmrOptions, SearchHit, SearchOptions, SnapshotFormat,
 };
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
@@ -264,19 +264,37 @@ impl PyVekryx {
     }
 
     /// Atomically replace a JSON snapshot on the same filesystem.
-    fn save(&self, path: PathBuf) -> PyResult<()> {
-        self.store.save(path).map_err(Into::into)
+    #[pyo3(signature = (path, *, format="json"))]
+    fn save(&self, path: PathBuf, format: &str) -> PyResult<()> {
+        self.store
+            .save_with_format(path, snapshot_format(format)?)
+            .map_err(Into::into)
+    }
+
+    fn save_mapped(&self, path: PathBuf) -> PyResult<()> {
+        self.store.save_mapped(path).map_err(Into::into)
     }
 
     #[staticmethod]
-    fn load(path: PathBuf) -> PyResult<Self> {
-        match Vekryx::load(path) {
+    #[pyo3(signature = (path, *, format="json"))]
+    fn load(path: PathBuf, format: &str) -> PyResult<Self> {
+        match Vekryx::load_with_format(path, snapshot_format(format)?) {
             Ok(store) => Ok(Self { store }),
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 Err(PyValueError::new_err(error.to_string()))
             }
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+fn snapshot_format(format: &str) -> PyResult<SnapshotFormat> {
+    match format {
+        "json" => Ok(SnapshotFormat::Json),
+        "compressed_json" => Ok(SnapshotFormat::CompressedJson),
+        _ => Err(PyValueError::new_err(
+            "format must be 'json' or 'compressed_json'",
+        )),
     }
 }
 
